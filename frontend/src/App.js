@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useReactMediaRecorder } from 'react-media-recorder';
 import axios from 'axios';
 import './App.css'; // Ensure Tailwind directives are here
@@ -9,6 +9,7 @@ const App = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [diagnosis, setDiagnosis] = useState(null);
   const [botAudioSrc, setBotAudioSrc] = useState(null);
+  const sentAudioRef = useRef(null);
 
   const {
     startRecording,
@@ -17,9 +18,10 @@ const App = () => {
     status
   } = useReactMediaRecorder({ audio: true });
 
-  // When recording stops, send audio to backend
+  // When recording stops, send audio to backend (only once)
   useEffect(() => {
-    if (status === 'stopped' && mediaBlobUrl) {
+    if (status === 'stopped' && mediaBlobUrl && sentAudioRef.current !== mediaBlobUrl) {
+      sentAudioRef.current = mediaBlobUrl;
       sendAudioToBackend(mediaBlobUrl);
     }
   }, [mediaBlobUrl, status]);

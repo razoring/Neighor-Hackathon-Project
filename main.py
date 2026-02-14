@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # API & Framework
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from google import genai
 from google.genai import types
 from elevenlabs.client import ElevenLabs
@@ -37,7 +37,7 @@ app.add_middleware(
 genai_client = genai.Client(api_key=os.getenv("GEMINI"))
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-1.5-flash"
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
 # Storage
@@ -153,7 +153,7 @@ async def get_audio_stream(text: str):
     """Streams the ElevenLabs audio back to the frontend."""
     audio_data = text_to_speech(text)
     if audio_data:
-        return FileResponse(io.BytesIO(audio_data), media_type="audio/mpeg")
+        return StreamingResponse(iter([audio_data]), media_type="audio/mpeg")
     return JSONResponse(status_code=500, content={"error": "TTS Generation Failed"})
 
 @app.post("/analyze")
