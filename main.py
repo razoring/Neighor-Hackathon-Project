@@ -21,11 +21,21 @@ try:
 except Exception as e: traceback.print_exc()
 
 @app.post("/predict")
-async def train():
-    file:File = "AbeBurrows_sample.wav"
-    with open(file,"wb") as buffer: buffer.write(file.read())
+async def train(file:UploadFile = File(...)):
+    temp = f"{file.filename}_TEMP"
+    with open(temp,"wb") as buffer: buffer.write(await file.read())
+
     speech, rate = librosa.load(file, sr=16000) #16000 current sample rate
     inputs = extract(speech, sampling_rate=rate, return_tensors="pt", padding=True, max_length=rate*30, truncation=True) #!!! rate*30 = 16000*30 seconds of processing MAX
+    with torch.no_grad(): infer = model(**inputs).logits
+
+    prediction = torch.nn.functional.softmax(infer, dim=1)
+    item = torch.argmax(prediction, dim=1).item()
+    label = model.config.id2label[item]
+    confidence = float(prediction[0][item].item())
+
+    return {"prediction":label, "scores": {model.config.id2label[i]: float(prediction[i][0]) for i in range(len(prediction[0]))}, "confidence":confidence}
+
 
 # DO NOT TOUCH BRO
-if __name__ == "__main__": uvicorn.run("main:app", host="localhost", port=6967)
+if __name__ == "__main__": uvicorn.run("main:app", host="localhost", port=6967, reload=True)
