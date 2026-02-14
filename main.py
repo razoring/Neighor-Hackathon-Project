@@ -9,14 +9,15 @@ from fastapi import FastAPI, UploadFile, File
 from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
 import uvicorn
 
-load()
+print(torch.__version__)
+#load()
 app = FastAPI()
-dataset = os.getenv("DATASET")
+datasets = "shields/wav2vec2-xl-960h-dementiabank" 
 #print(model)
 
 try:
-    extract = AutoFeatureExtractor.from_pretrained(dataset)
-    model = AutoModelForAudioClassification.from_pretrained(dataset)
+    extract = AutoFeatureExtractor.from_pretrained(datasets)
+    model = AutoModelForAudioClassification.from_pretrained(datasets, trust_remote_code=True)
     model.eval()
 except Exception as e: traceback.print_exc()
 
@@ -26,7 +27,7 @@ async def train(file:UploadFile = File(...)):
     with open(temp,"wb") as buffer: buffer.write(await file.read())
 
     speech, rate = librosa.load(file, sr=16000) #16000 current sample rate
-    inputs = extract(speech, sampling_rate=rate, return_tensors="pt", padding=True, max_length=rate*30, truncation=True) #!!! rate*30 = 16000*30 seconds of processing MAX
+    inputs = extract(speech, sampling_rate=rate, return_tensors="pt", padding=True, max_length=rate*30, truncation=True, weights_only=True) #!!! rate*30 = 16000*30 seconds of processing MAX
     with torch.no_grad(): infer = model(**inputs).logits
 
     prediction = torch.nn.functional.softmax(infer, dim=1)
