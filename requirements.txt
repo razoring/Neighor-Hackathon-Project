@@ -10,3 +10,6 @@ elevenlabs
 python-dotenv
 numpy
 scipy
+SpeechRecognition
+requests
+soundfile
