@@ -221,4 +221,4 @@ async def analyze_full_session(session_id: str = Form(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8000, reload=True)
+    uvicorn.run(app, host="localhost", port=8000)
