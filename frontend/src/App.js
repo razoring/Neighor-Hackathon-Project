@@ -59,13 +59,27 @@ const App = () => {
       const formData = new FormData();
       formData.append('session_id', sessionId);
       const res = await axios.post('http://localhost:8000/analyze', formData);
-      // Parse the JSON string returned by Gemini
-      const result = JSON.parse(res.data);
-      setDiagnosis(result);
+      const data = res.data;
+
+      // The backend returns { local_inference, gemini_explanation }
+      const local = data.local_inference || {};
+      const gemini = data.gemini_explanation || {};
+
+      // Prefer structured Gemini explanation if present, otherwise use local inference
+      const merged = {
+        label: gemini.label || local.label || 'Unknown',
+        score: gemini.score ?? local.score ?? 0,
+        confidence: gemini.confidence || local.confidence || 'Low',
+        explanation: gemini.explanation || gemini.explanation_text || `Local heuristic: ${JSON.stringify(local)}`,
+        raw: data,
+      };
+
+      setDiagnosis(merged);
     } catch (err) {
       console.error("Analysis failed", err);
+    } finally {
+      setIsAnalyzing(false);
     }
-    setIsAnalyzing(false);
   };
 
   return (

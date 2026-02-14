@@ -14,7 +14,6 @@ from pydub import AudioSegment, silence
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
-import requests
 import speech_recognition as sr
 
 load_dotenv()
@@ -49,6 +48,10 @@ except Exception as e:
     # Fallback to standard wav2vec2 if specific one fails or is gated
     processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
     model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h")
+# Move model to GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+print(f"Using device: {device}")
 
 # Storage for session audio
 SESSION_STORAGE = "temp_sessions"
@@ -96,13 +99,16 @@ def extract_features(audio_path):
     
     # Process inputs
     inputs = processor(audio_input, sampling_rate=16000, return_tensors="pt", padding=True)
-    
+    # move tensors to device
+    for k, v in inputs.items():
+        inputs[k] = v.to(device)
+
     with torch.no_grad():
         outputs = model(**inputs)
     
     # Get the last hidden state (features)
     # Shape: [1, Sequence_Length, Hidden_Size]
-    hidden_states = outputs.last_hidden_state
+    hidden_states = outputs.last_hidden_state.cpu()
     
     # Calculate simple statistics on the embeddings to pass to Gemini
     # (Mean and Variance of the acoustic features)
@@ -112,32 +118,26 @@ def extract_features(audio_path):
     return mean_embedding[:10], std_embedding[:10] # Return first 10 dims for brevity in prompt
 
 
-def run_gradient_inference(trimmed_audio_path: str):
+def run_local_inference(trimmed_audio_path: str):
     """
-    Optional: run inference on DigitalOcean Gradient or external endpoint.
-    Configure via environment variables:
-      DO_GRADIENT_URL - full URL to POST the audio file to (accepts multipart/form-data with key 'file')
-      DO_GRADIENT_API_KEY - optional API key to include in Authorization header
-
-    Returns parsed JSON result or None if not configured or on failure.
+    Run inference locally on the available device (GPU if present).
+    Extract features via the loaded wav2vec2 model, transcribe audio, and score locally.
+    Returns a dict with keys: label, score, confidence, features_mean, features_std, transcript
     """
-    url = os.getenv("DO_GRADIENT_URL")
-    api_key = os.getenv("DO_GRADIENT_API_KEY")
-    if not url:
-        return None
-
     try:
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-        with open(trimmed_audio_path, "rb") as f:
-            files = {"file": (os.path.basename(trimmed_audio_path), f, "audio/wav")}
-            resp = requests.post(url, headers=headers, files=files, timeout=60)
-        resp.raise_for_status()
-        return resp.json()
+        features_mean, features_std = extract_features(trimmed_audio_path)
+        transcript = transcribe_audio(trimmed_audio_path)
+        score_obj = local_score_from_features(features_mean, features_std)
+        return {
+            "label": score_obj.get("label"),
+            "score": score_obj.get("score"),
+            "confidence": score_obj.get("confidence"),
+            "features_mean": features_mean,
+            "features_std": features_std,
+            "transcript": transcript,
+        }
     except Exception as e:
-        print(f"Gradient inference failed: {e}")
+        print(f"Local inference failed: {e}")
         return None
 
 
@@ -285,45 +285,48 @@ async def analyze_session(session_id: str = Form(...)):
             "message": str(e)
         })
 
-    # 3. Extract Features using the specific DementiaBank model
-    try:
-        features_mean, features_std = extract_features(trimmed_path)
-    except Exception as e:
-        print(f"Feature extraction failed: {e}")
-        features_mean = "Error"
-        features_std = "Error"
+    # 3. Run local inference (preferred) to extract features, transcript and score
+    local_result = run_local_inference(trimmed_path)
+    if local_result is None:
+        return JSONResponse(status_code=500, content={"error": "local_inference_failed"})
 
-    # 4. Gemini Diagnosis
-    diagnosis_prompt = f"""
-    Act as a medical expert in neurology and speech pathology.
-    I have analyzed a user's speech using the 'shields/wav2vec2-xl-960h-dementiabank' model.
+    # 4. Ask Gemini to explain the diagnosis reasoning using the features & transcript
+    explanation_prompt = f"""
+    You are a medical expert in neurology and speech pathology. A local model analyzed a user's speech and returned this result:
 
-    Acoustic Feature Mean (First 10 dims): {features_mean}
-    Acoustic Feature Variance (First 10 dims): {features_std}
+    Transcript: {local_result.get('transcript')}
+    Acoustic Feature Mean (First 10 dims): {local_result.get('features_mean')}
+    Acoustic Feature Variance (First 10 dims): {local_result.get('features_std')}
+    Local Score: {local_result.get('score')} (label: {local_result.get('label')}, confidence: {local_result.get('confidence')})
 
-    Based on the conversation (linguistic complexity, confusion, memory) and these acoustic markers:
-    1. Determine if the user shows signs of dementia.
-    2. Provide a score (0-100, where 100 is high likelihood of dementia).
-    3. Provide a confidence level.
-    4. Explain your reasoning referencing the 'DementiaBank' dataset characteristics (e.g., pauses, filler words, acoustic jitter).
+    Based on the transcript and these acoustic markers, provide a concise explanation of how the diagnosis was reached. Include:
+    - A label ("Dementia" or "Healthy")
+    - A score (0-100)
+    - A confidence level (High/Medium/Low)
+    - A short explanation referencing possible markers (e.g., pauses, filler words, acoustic jitter, language errors) and how the DementiaBank dataset informed this.
 
-    Format output as JSON: {{ "label": "Dementia" or "Healthy", "score": int, "confidence": "High/Medium/Low", "explanation": "..." }}
+    Return output as strict JSON only with keys: label, score, confidence, explanation
     """
 
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        result = model.generate_content(diagnosis_prompt)
-        # Clean json markdown
-        text = result.text.replace("```json", "").replace("```", "")
+        resp = model.generate_content([explanation_prompt])
+        text = resp.text.replace("```json", "").replace("```", "").strip()
         try:
-            parsed = json.loads(text)
-            return JSONResponse(content=parsed)
+            parsed_explanation = json.loads(text)
         except Exception:
-            # If parsing fails, return raw text with 200 but indicate parse issue
-            return JSONResponse(content={"raw": text, "warning": "could_not_parse_json"})
+            # If parsing fails, return the raw explanation under 'explanation_text'
+            parsed_explanation = {"explanation_text": text}
+
+        # Combine local inference and Gemini explanation
+        out = {
+            "local_inference": local_result,
+            "gemini_explanation": parsed_explanation,
+        }
+        return JSONResponse(content=out)
     except Exception as e:
-        print(f"Diagnosis generation failed: {e}")
-        return JSONResponse(status_code=500, content={"error": "diagnosis_failed", "message": str(e)})
+        print(f"Explanation generation failed: {e}")
+        return JSONResponse(status_code=500, content={"error": "explanation_failed", "message": str(e), "local_inference": local_result})
 
 if __name__ == "__main__":
     import uvicorn
