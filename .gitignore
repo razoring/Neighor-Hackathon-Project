@@ -1,3 +1,3 @@
-backend/.venv
-backend/.env
+.venv
+.env
 frontend/node_modules
