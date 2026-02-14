@@ -20,11 +20,11 @@ const App = () => {
 
   // When recording stops, send audio to backend (only once)
   useEffect(() => {
-    if (status === 'stopped' && mediaBlobUrl && sentAudioRef.current !== mediaBlobUrl) {
+    if (status === 'stopped' && mediaBlobUrl && !sentAudioRef.current) {
       sentAudioRef.current = mediaBlobUrl;
       sendAudioToBackend(mediaBlobUrl);
     }
-  }, [mediaBlobUrl, status]);
+  }, [status, mediaBlobUrl]);
 
   const sendAudioToBackend = async (url) => {
     const audioBlob = await fetch(url).then(r => r.blob());
@@ -49,9 +49,11 @@ const App = () => {
       const audioUrl = URL.createObjectURL(audioRes.data);
       const audio = new Audio(audioUrl);
       audio.play();
-
     } catch (err) {
       console.error(err);
+    } finally {
+      // Reset ref after send completes
+      sentAudioRef.current = null;
     }
   };
 
