@@ -34,7 +34,7 @@ async def train(file:UploadFile = File(...)):
     label = model.config.id2label[item]
     confidence = float(prediction[0][item].item())
 
-    return {"prediction":label, "scores": {model.config.id2label[i]: float(prediction[i][0]) for i in range(len(prediction[0]))}, "confidence":confidence}
+    return {"prediction":label, "scores": {model.config.id2label[i]: float(prediction[0][i]) for i in range(len(prediction[0]))}, "confidence":confidence}
 
 
 # DO NOT TOUCH BRO
