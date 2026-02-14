@@ -2,24 +2,28 @@ import os
 import time
 import shutil
 import io
+import json
 import torch
 import librosa
 import numpy as np
-import google.generativeai as genai
-import json
+from dotenv import load_dotenv
+
+# API & Framework
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from google import genai
+from google.genai import types
+from elevenlabs.client import ElevenLabs
 from pydub import AudioSegment, silence
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
-from elevenlabs.client import ElevenLabs
-from dotenv import load_dotenv
-import speech_recognition as sr
 
+# Load environment variables
 load_dotenv()
 
 app = FastAPI()
 
+# Enable CORS for React
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,139 +33,193 @@ app.add_middleware(
 )
 
 # --- API INITIALIZATION ---
-# Fixed: Explicitly using the current stable model string
-genai.configure(api_key=os.getenv("GEMINI"))
-eleven = ElevenLabs(api_key=os.getenv("TTS"))
+# Using the modern google-genai SDK
+genai_client = genai.Client(api_key=os.getenv("GEMINI"))
+eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 
-MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+GEMINI_MODEL = "gemini-1.5-flash"
+DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
-print(f"Loading Model on {device}...")
-try:
-    processor = Wav2Vec2Processor.from_pretrained(MODEL_ID)
-    model = Wav2Vec2Model.from_pretrained(MODEL_ID).to(device)
-    print("Model Loaded.")
-except Exception as e:
-    print(f"Model Load Error: {e}. Falling back to base.")
-    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
-    model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(device)
-
+# Storage
 SESSION_STORAGE = "temp_sessions"
 os.makedirs(SESSION_STORAGE, exist_ok=True)
 
-# --- UTILITIES ---
+# --- LOAD AI MODELS ---
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+print("Loading Wav2Vec2 DementiaBank Model...")
+try:
+    processor = Wav2Vec2Processor.from_pretrained(DEMENTIA_MODEL_ID)
+    wav_model = Wav2Vec2Model.from_pretrained(DEMENTIA_MODEL_ID).to(device)
+    print("Model Loaded Successfully.")
+except Exception as e:
+    print(f"Error loading specialized model: {e}. Falling back to base.")
+    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
+    wav_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(device)
+
+# --- HELPERS ---
 
 def text_to_speech(text: str):
+    """ElevenLabs TTS conversion."""
     try:
-        # ElevenLabs generates audio
-        audio_stream = eleven.generate(
+        audio_stream = eleven_client.generate(
             text=text,
             voice="Rachel",
             model="eleven_monolingual_v1"
         )
         return b"".join(chunk for chunk in audio_stream)
     except Exception as e:
-        print(f"TTS Error: {e}")
+        print(f"ElevenLabs Error: {e}")
         return None
 
-def trim_silence(audio_path):
-    # This requires ffmpeg installed on your Windows PATH
+def trim_silence_pydub(audio_path: str):
+    """Removes silence from audio using pydub."""
     try:
         audio = AudioSegment.from_file(audio_path)
-        nonsilent_chunks = silence.split_on_silence(
-            audio, min_silence_len=500, silence_thresh=audio.dbFS - 16
+        chunks = silence.split_on_silence(
+            audio, min_silence_len=600, silence_thresh=audio.dbFS - 16
         )
         output = AudioSegment.empty()
-        for chunk in nonsilent_chunks:
+        for chunk in chunks:
             output += chunk
         
         trimmed_path = audio_path.replace(".wav", "_trimmed.wav")
         output.export(trimmed_path, format="wav")
         return trimmed_path
     except Exception as e:
-        print(f"Trim failed (Likely missing ffmpeg): {e}")
-        return audio_path # Return original if trim fails
+        print(f"Silence trimming failed: {e}")
+        return audio_path
 
-def extract_features(audio_path):
-    # librosa also needs ffmpeg for certain formats
-    audio_input, _ = librosa.load(audio_path, sr=16000)
-    inputs = processor(audio_input, sampling_rate=16000, return_tensors="pt", padding=True).to(device)
-    
-    with torch.no_grad():
-        outputs = model(**inputs)
-    
-    hidden_states = outputs.last_hidden_state.cpu()
-    mean_embedding = torch.mean(hidden_states, dim=1).numpy().tolist()[0]
-    std_embedding = torch.std(hidden_states, dim=1).numpy().tolist()[0]
-    return mean_embedding[:10], std_embedding[:10]
+def extract_acoustic_features(audio_path: str):
+    """Extracts high-level embeddings from the DementiaBank model."""
+    try:
+        # Load audio (downsample to 16kHz for Wav2Vec2)
+        y, sr = librosa.load(audio_path, sr=16000)
+        inputs = processor(y, sampling_rate=16000, return_tensors="pt", padding=True).to(device)
+        
+        with torch.no_grad():
+            outputs = wav_model(**inputs)
+        
+        # Get mean and std of the last hidden states
+        embeddings = outputs.last_hidden_state.cpu()
+        mean_feats = torch.mean(embeddings, dim=1).numpy().tolist()[0]
+        std_feats = torch.std(embeddings, dim=1).numpy().tolist()[0]
+        
+        # Return a subset (first 15 dimensions) to provide as context to Gemini
+        return mean_feats[:15], std_feats[:15]
+    except Exception as e:
+        print(f"Feature Extraction Error: {e}")
+        return None, None
 
 # --- ENDPOINTS ---
 
 @app.post("/chat")
 async def chat_endpoint(file: UploadFile = File(...), session_id: str = Form(...), history: str = Form(...)):
+    """Handles the casual chat loop."""
     session_dir = os.path.join(SESSION_STORAGE, session_id)
     os.makedirs(session_dir, exist_ok=True)
     
-    user_audio_path = os.path.join(session_dir, f"user_{int(time.time())}.wav")
+    # Save user audio
+    user_filename = f"user_{int(time.time())}.wav"
+    user_audio_path = os.path.join(session_dir, user_filename)
     with open(user_audio_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # FIX: Use 'gemini-pro' if 'gemini-1.5-flash' returns 404 in your current lib version
-    # Or ensure your library is updated: pip install -U google-generativeai
+    # Friendly Chat Logic with Gemini
+    # Note: For a hackathon, we assume the user is speaking naturally. 
+    # You could use Gemini's multimodal power to 'listen' to the audio here.
+    prompt = f"""
+    You are a friendly, caring phone companion named Rachel. 
+    You are having a casual chat with an elderly person. 
+    Keep your response very warm, short (1-2 sentences), and ask a simple follow-up question.
+    History: {history}
+    """
+    
     try:
-        model_gemini = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Friendly chat history: {history}. Reply naturally and briefly to the user."
-        chat_response = model_gemini.generate_content(prompt)
-        response_text = chat_response.text
+        response = genai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt
+        )
+        response_text = response.text
     except Exception as e:
-        print(f"Gemini Error: {e}")
-        response_text = "I'm sorry, I'm having a bit of trouble connecting. How are you feeling today?"
+        print(f"Gemini Chat Error: {e}")
+        response_text = "It's so good to hear from you. How has your morning been?"
 
     return JSONResponse(content={"response_text": response_text})
 
 @app.get("/audio_response")
-async def get_audio(text: str):
-    audio = text_to_speech(text)
-    if audio:
-        return FileResponse(io.BytesIO(audio), media_type="audio/mpeg")
-    return JSONResponse(status_code=500, content={"error": "TTS failed"})
+async def get_audio_stream(text: str):
+    """Streams the ElevenLabs audio back to the frontend."""
+    audio_data = text_to_speech(text)
+    if audio_data:
+        return FileResponse(io.BytesIO(audio_data), media_type="audio/mpeg")
+    return JSONResponse(status_code=500, content={"error": "TTS Generation Failed"})
 
 @app.post("/analyze")
-async def analyze_session(session_id: str = Form(...)):
+async def analyze_full_session(session_id: str = Form(...)):
+    """Trims silence, extracts features, and runs Gemini Diagnosis."""
     session_dir = os.path.join(SESSION_STORAGE, session_id)
     
-    # Combined user audio logic
-    files = sorted([f for f in os.listdir(session_dir) if f.startswith("user_")])
-    if not files:
-        return JSONResponse(status_code=400, content={"error": "No audio found"})
+    if not os.path.exists(session_dir):
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+
+    # 1. Stitch User Clips
+    user_files = sorted([f for f in os.listdir(session_dir) if f.startswith("user_")])
+    if not user_files:
+        return JSONResponse(status_code=400, content={"error": "No audio data collected"})
 
     try:
-        combined = AudioSegment.empty()
-        for f in files:
-            combined += AudioSegment.from_file(os.path.join(session_dir, f))
+        combined_audio = AudioSegment.empty()
+        for f in user_files:
+            combined_audio += AudioSegment.from_file(os.path.join(session_dir, f))
         
-        full_path = os.path.join(session_dir, "full.wav")
-        combined.export(full_path, format="wav")
-        trimmed_path = trim_silence(full_path)
-        
-        m, s = extract_features(trimmed_path)
-        
-        # Expert Diagnosis with Gemini
-        diag_model = genai.GenerativeModel('gemini-1.5-flash')
-        diag_prompt = f"""
-        Analyze these speech features from the DementiaBank Wav2Vec2 model:
-        Mean: {m}
-        Std: {s}
-        Provide a JSON response with: label, score (0-100), confidence (High/Low), and explanation.
+        full_path = os.path.join(session_dir, "full_conversation.wav")
+        combined_audio.export(full_path, format="wav")
+
+        # 2. Trim Silence
+        trimmed_path = trim_silence_pydub(full_path)
+
+        # 3. Extract Features from Wav2Vec2-DementiaBank
+        means, stds = extract_acoustic_features(trimmed_path)
+
+        # 4. Expert Interpretation using Gemini
+        # We pass the numerical fingerprints to Gemini to explain the diagnosis
+        diagnosis_prompt = f"""
+        Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the 
+        Shields Wav2Vec2 DementiaBank model. 
+
+        Acoustic Feature Fingerprint (Mean): {means}
+        Acoustic Feature Fingerprint (Std): {stds}
+
+        Based on these high-dimensional embeddings and the context of a 'friendly chat', 
+        determine the likelihood of cognitive impairment. 
+        Refer to characteristics of the DementiaBank dataset (e.g., prosody, phonological errors).
+
+        Output strictly in JSON format:
+        {{
+            "label": "Dementia" or "Healthy",
+            "score": 0-100,
+            "confidence": "High" | "Medium" | "Low",
+            "explanation": "Explain how the acoustic features and speech patterns led to this result."
+        }}
         """
-        res = diag_model.generate_content(diag_prompt)
-        # Handle possible markdown in response
-        clean_json = res.text.replace("```json", "").replace("```", "").strip()
-        return JSONResponse(content=json.loads(clean_json))
-    
+
+        analysis_res = genai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=diagnosis_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
+        return JSONResponse(content=json.loads(analysis_res.text))
+
     except Exception as e:
+        print(f"Analysis Crash: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 if __name__ == "__main__":
     import uvicorn
+    # Use 0.0.0.0 for DigitalOcean deployment
     uvicorn.run(app, host="0.0.0.0", port=8000)
