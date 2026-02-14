@@ -1,5 +1,6 @@
 import sys
 import os
+import traceback
 from dotenv import load_dotenv as load
 import torch
 import librosa
@@ -9,4 +10,11 @@ from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
 
 load()
 app = FastAPI()
-model = os.getenv("DATASET")
+dataset = os.getenv("DATASET")
+#print(model)
+
+try:
+    extract = AutoFeatureExtractor.from_pretrained(dataset)
+    model = AutoModelForAudioClassification.from_pretrained(dataset)
+    model.eval()
+except Exception as e: traceback.print_exc()
