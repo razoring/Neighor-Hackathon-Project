@@ -37,7 +37,7 @@ app.add_middleware(
 genai_client = genai.Client(api_key=os.getenv("GEMINI"))
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
 # Storage
@@ -63,10 +63,10 @@ except Exception as e:
 def text_to_speech(text: str):
     """ElevenLabs TTS conversion."""
     try:
-        audio_stream = eleven_client.generate(
+        audio_stream = eleven_client.text_to_speech.convert(
             text=text,
-            voice="Rachel",
-            model="eleven_monolingual_v1"
+            voice_id="21m00Tcm4TlvDq8ikWAM",
+            model_id="eleven_turbo_v2_5"
         )
         return b"".join(chunk for chunk in audio_stream)
     except Exception as e:
