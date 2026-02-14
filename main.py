@@ -6,6 +6,7 @@ import torch
 import librosa
 import numpy as np
 import google.generativeai as genai
+import json
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -13,6 +14,8 @@ from pydub import AudioSegment, silence
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
+import requests
+import speech_recognition as sr
 
 load_dotenv()
 
@@ -108,6 +111,72 @@ def extract_features(audio_path):
     
     return mean_embedding[:10], std_embedding[:10] # Return first 10 dims for brevity in prompt
 
+
+def run_gradient_inference(trimmed_audio_path: str):
+    """
+    Optional: run inference on DigitalOcean Gradient or external endpoint.
+    Configure via environment variables:
+      DO_GRADIENT_URL - full URL to POST the audio file to (accepts multipart/form-data with key 'file')
+      DO_GRADIENT_API_KEY - optional API key to include in Authorization header
+
+    Returns parsed JSON result or None if not configured or on failure.
+    """
+    url = os.getenv("DO_GRADIENT_URL")
+    api_key = os.getenv("DO_GRADIENT_API_KEY")
+    if not url:
+        return None
+
+    try:
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        with open(trimmed_audio_path, "rb") as f:
+            files = {"file": (os.path.basename(trimmed_audio_path), f, "audio/wav")}
+            resp = requests.post(url, headers=headers, files=files, timeout=60)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"Gradient inference failed: {e}")
+        return None
+
+
+def transcribe_audio(trimmed_audio_path: str):
+    """Try to transcribe using `speech_recognition` if available; return string or None."""
+    try:
+        r = sr.Recognizer()
+        with sr.AudioFile(trimmed_audio_path) as source:
+            audio = r.record(source)
+        # try Google Web Speech (requires internet but no API key for small requests)
+        try:
+            text = r.recognize_google(audio)
+            return text
+        except Exception:
+            try:
+                text = r.recognize_sphinx(audio)
+                return text
+            except Exception:
+                return None
+    except Exception as e:
+        print(f"Transcription failed: {e}")
+        return None
+
+
+def local_score_from_features(mean_feats, std_feats):
+    """Simple heuristic scorer converting features to label/score/confidence."""
+    try:
+        vals = [abs(x) for x in mean_feats]
+        score = int(min(100, max(0, sum(vals) / (len(vals) or 1) * 10)))
+        # Higher variance indicates more irregular speech -> increase score slightly
+        vare = sum([abs(x) for x in std_feats]) / (len(std_feats) or 1)
+        score = min(100, int(score + vare * 5))
+        label = "Dementia" if score > 55 else "Healthy"
+        confidence = "High" if score > 75 or score < 25 else ("Medium" if score > 45 and score < 65 else "Low")
+        return {"label": label, "score": score, "confidence": confidence}
+    except Exception as e:
+        print(f"Scoring failed: {e}")
+        return {"label": "Unknown", "score": 0, "confidence": "Low"}
+
 # --- ENDPOINTS ---
 
 @app.post("/chat")
@@ -181,22 +250,42 @@ async def analyze_session(session_id: str = Form(...)):
     4. Asks Gemini for Diagnosis.
     """
     session_dir = os.path.join(SESSION_STORAGE, session_id)
-    
+
+    # Validate session directory
+    if not os.path.isdir(session_dir):
+        return JSONResponse(status_code=404, content={
+            "error": "session_not_found",
+            "message": f"No session directory for '{session_id}'"
+        })
+
     # 1. Aggregate Audio
     combined = AudioSegment.empty()
     files = sorted([f for f in os.listdir(session_dir) if f.startswith("user_")])
+    if not files:
+        return JSONResponse(status_code=400, content={
+            "error": "no_audio_files",
+            "message": "No user_*.wav files found in session"
+        })
+
     for f in files:
-        combined += AudioSegment.from_file(os.path.join(session_dir, f))
-    
+        try:
+            combined += AudioSegment.from_file(os.path.join(session_dir, f))
+        except Exception as e:
+            print(f"Failed to load audio file {f}: {e}")
+
     full_audio_path = os.path.join(session_dir, "full_user_audio.wav")
     combined.export(full_audio_path, format="wav")
-    
+
     # 2. Trim Silence
-    trimmed_path = trim_silence(full_audio_path)
-    
+    try:
+        trimmed_path = trim_silence(full_audio_path)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": "trim_failed",
+            "message": str(e)
+        })
+
     # 3. Extract Features using the specific DementiaBank model
-    # We pass these abstract features to Gemini to "simulate" the model's insight
-    # combined with the linguistic patterns.
     try:
         features_mean, features_std = extract_features(trimmed_path)
     except Exception as e:
@@ -205,30 +294,36 @@ async def analyze_session(session_id: str = Form(...)):
         features_std = "Error"
 
     # 4. Gemini Diagnosis
-    # We feed the transcript (simulated here) and the acoustic feature stats
     diagnosis_prompt = f"""
     Act as a medical expert in neurology and speech pathology.
     I have analyzed a user's speech using the 'shields/wav2vec2-xl-960h-dementiabank' model.
-    
+
     Acoustic Feature Mean (First 10 dims): {features_mean}
     Acoustic Feature Variance (First 10 dims): {features_std}
-    
+
     Based on the conversation (linguistic complexity, confusion, memory) and these acoustic markers:
     1. Determine if the user shows signs of dementia.
     2. Provide a score (0-100, where 100 is high likelihood of dementia).
     3. Provide a confidence level.
     4. Explain your reasoning referencing the 'DementiaBank' dataset characteristics (e.g., pauses, filler words, acoustic jitter).
-    
+
     Format output as JSON: {{ "label": "Dementia" or "Healthy", "score": int, "confidence": "High/Medium/Low", "explanation": "..." }}
     """
-    
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    result = model.generate_content(diagnosis_prompt)
-    
-    # Clean json markdown
-    text = result.text.replace("```json", "").replace("```", "")
-    
-    return JSONResponse(content=text)
+
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        result = model.generate_content(diagnosis_prompt)
+        # Clean json markdown
+        text = result.text.replace("```json", "").replace("```", "")
+        try:
+            parsed = json.loads(text)
+            return JSONResponse(content=parsed)
+        except Exception:
+            # If parsing fails, return raw text with 200 but indicate parse issue
+            return JSONResponse(content={"raw": text, "warning": "could_not_parse_json"})
+    except Exception as e:
+        print(f"Diagnosis generation failed: {e}")
+        return JSONResponse(status_code=500, content={"error": "diagnosis_failed", "message": str(e)})
 
 if __name__ == "__main__":
     import uvicorn
