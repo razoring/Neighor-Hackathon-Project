@@ -11,7 +11,7 @@ import pyaudio
 import wave
 import threading
 from dotenv import load_dotenv
-import speech_recognition as sr
+import whisper
 from pydub import AudioSegment
 from elevenlabs.client import ElevenLabs
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
@@ -58,6 +58,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Loading Models on {device}...")
 processor = Wav2Vec2Processor.from_pretrained(DEMENTIA_MODEL_ID)
 wav_model = Wav2Vec2Model.from_pretrained(DEMENTIA_MODEL_ID).to(device)
+
+print("Loading Whisper base model...")
+whisper_model = whisper.load_model("base", device=device)
 
 # --- HELPER FUNCTIONS ---
 
@@ -204,14 +207,12 @@ def start_voice_system():
             # Store clip for final analysis
             clips_collected.append(temp_wav)
 
-            # Transcribe
-            recognizer = sr.Recognizer()
+            # Transcribe using Whisper
             try:
-                with sr.AudioFile(temp_wav) as source:
-                    audio_data = recognizer.record(source)
+                result = whisper_model.transcribe(temp_wav, language="en", fp16=torch.cuda.is_available())
+                user_text = result["text"].strip()
                 
-                try:
-                    user_text = recognizer.recognize_google(audio_data)
+                if user_text and len(user_text) > 0:
                     print(f"User: {user_text}")
                     no_response_count = 0
                     
@@ -228,13 +229,12 @@ def start_voice_system():
                     
                     # Play audio in a separate thread so we can still listen for barge-ins
                     threading.Thread(target=play_audio, args=(audio_bytes,)).start()
-                    
-                except sr.UnknownValueError:
+                else:
                     no_response_count += 1
                     print(f"No speech recognized ({no_response_count}/2)")
                     idle_timeout = 0  # Reset idle counter on silence detection
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"Transcription Error: {e}")
                 no_response_count += 1
                 idle_timeout = 0  # Reset idle counter on error
         
