@@ -27,9 +27,28 @@ const App = () => {
   }, [status, mediaBlobUrl]);
 
   const sendAudioToBackend = async (url) => {
-    const audioBlob = await fetch(url).then(r => r.blob());
+    // Fetch the blob and retry a few times if it's empty (MediaRecorder may finalize slowly)
+    let audioBlob = await fetch(url).then(r => r.blob());
+    const maxRetries = 5;
+    let attempt = 0;
+    while (audioBlob.size === 0 && attempt < maxRetries) {
+      // small delay then refetch
+      await new Promise(res => setTimeout(res, 200));
+      audioBlob = await fetch(url).then(r => r.blob());
+      attempt += 1;
+    }
+
+    if (audioBlob.size === 0) {
+      console.warn('Recorded audio blob is empty — not sending to backend');
+      setMessages(prev => [...prev, { sender: 'bot', text: 'Recording failed — please try again.' }]);
+      return;
+    }
+
     const formData = new FormData();
-    formData.append('file', audioBlob, 'input.wav');
+    // preserve actual extension from blob type
+    const mime = audioBlob.type || 'audio/webm';
+    const ext = mime.split('/')[1] ? mime.split('/')[1].split('+')[0] : 'webm';
+    formData.append('file', audioBlob, `input.${ext}`);
     formData.append('session_id', sessionId);
     formData.append('history', JSON.stringify(messages));
 

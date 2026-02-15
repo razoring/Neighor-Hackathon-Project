@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from elevenlabs.client import ElevenLabs
 from pydub import AudioSegment, silence
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
+from transformers import Wav2Vec2Processor, Wav2Vec2Model, Wav2Vec2ForCTC
 
 # Set pydub paths after import
 AudioSegment.converter = ffmpeg_path
@@ -69,6 +69,16 @@ except Exception as e:
     processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
     wav_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(device)
 
+# Load a CTC head for speech-to-text (fallback to facebook/wav2vec2-base-960h)
+try:
+    asr_model = Wav2Vec2ForCTC.from_pretrained(DEMENTIA_MODEL_ID).to(device)
+except Exception:
+    try:
+        asr_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base-960h").to(device)
+    except Exception as e:
+        print(f"Error loading ASR model: {e}")
+        asr_model = None
+
 # --- HELPERS ---
 
 def query_ollama(prompt: str) -> str:
@@ -100,6 +110,27 @@ def text_to_speech(text: str):
     except Exception as e:
         print(f"ElevenLabs Error: {e}")
         return None
+
+
+def transcribe_audio(audio_path: str) -> str:
+    """Transcribe audio file to text using Wav2Vec2 CTC model."""
+    if asr_model is None:
+        return ""
+    try:
+        # load waveform
+        speech, sr = librosa.load(audio_path, sr=16000)
+        inputs = processor(speech, sampling_rate=16000, return_tensors="pt", padding=True)
+        input_values = inputs.input_values.to(device)
+
+        with torch.no_grad():
+            logits = asr_model(input_values).logits
+
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = processor.batch_decode(predicted_ids)[0]
+        return transcription.strip()
+    except Exception as e:
+        print(f"Transcription Error: {e}")
+        return ""
 
 def trim_silence_pydub(audio_path: str):
     """Removes silence from audio using pydub."""
@@ -155,14 +186,34 @@ async def chat_endpoint(file: UploadFile = File(...), session_id: str = Form(...
     with open(user_audio_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    # Reject empty uploads early
+    try:
+        if os.path.getsize(user_audio_path) == 0:
+            os.remove(user_audio_path)
+            return JSONResponse(status_code=400, content={"error": "Uploaded audio is empty"})
+    except Exception:
+        pass
+
+    # Transcribe the received audio and include the transcript in the prompt
+    transcript = transcribe_audio(user_audio_path)
+    print(f"Transcript: {transcript}")
+
     # Friendly Chat Logic with Ollama
-    prompt = open("prompt.txt","r").read()
-    
+    base_prompt = open("prompt.txt","r").read()
+    # Build prompt with transcript and optional history
+    if transcript and transcript.strip():
+        prompt = f"{base_prompt}\n\nUser transcript: \"{transcript}\"\n"
+    else:
+        prompt = base_prompt
+
+    if history and history.strip():
+        prompt = f"{prompt}\nConversation History: {history}\n"
+
     response_text = query_ollama(prompt)
     if not response_text or len(response_text.strip()) == 0:
         response_text = "It's so good to hear from you. How has your morning been?"
 
-    return JSONResponse(content={"response_text": response_text})
+    return JSONResponse(content={"response_text": response_text, "transcript": transcript})
 
 @app.get("/audio_response")
 async def get_audio_stream(text: str):
