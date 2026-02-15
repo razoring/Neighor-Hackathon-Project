@@ -1,22 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Activity, LayoutDashboard, Settings, User } from 'lucide-react';
+import { Activity, LayoutDashboard, Settings, User, Phone, Calendar, Clock } from 'lucide-react';
 import DementiaCard from './components/DementiaCard';
 import BreathingCard from './components/BreathingCard';
 import SpiderGraph from './components/SpiderGraph';
+import Skeleton, { CardSkeleton, GraphSkeleton } from './components/Skeleton';
 
 function App() {
   const [healthData, setHealthData] = useState(null);
+  const [historyData, setHistoryData] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
     try {
-      const response = await axios.get('http://localhost:5000/api/health');
-      if (response.data && (response.data.dementia_assessment || response.data.breathing)) {
-        setHealthData(response.data);
+      const [healthRes, historyRes] = await Promise.all([
+        axios.get('http://localhost:5000/api/health'),
+        axios.get('http://localhost:5000/api/history')
+      ]);
+
+      if (healthRes.data && (healthRes.data.dementia_assessment || healthRes.data.breathing)) {
+        setHealthData(healthRes.data);
+      }
+
+      if (Array.isArray(historyRes.data)) {
+        setHistoryData(historyRes.data);
       }
     } catch (error) {
-      console.error("Error fetching health data", error);
+      console.error("Error fetching data", error);
     } finally {
       setLoading(false);
     }
@@ -28,12 +38,16 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const formatDate = (timestamp) => {
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  };
+
   return (
     <div className="flex min-h-screen bg-[#f3f3f1]">
       {/* Sidebar */}
       <aside className="w-24 bg-white flex flex-col items-center py-8 rounded-r-3xl shadow-sm z-10 hidden md:flex">
         <div className="mb-12">
-          {/* Logo placeholder */}
           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-orange-400 flex items-center justify-center text-white font-bold">
             D
           </div>
@@ -85,7 +99,6 @@ function App() {
 
           {/* Gradient Bar */}
           <div className="h-16 w-full rounded-2xl bg-gradient-to-r from-purple-400 via-yellow-300 to-red-400 relative mt-6 opacity-90">
-            {/* Indicator Line */}
             <div className="absolute top-0 bottom-0 w-1 bg-white shadow-xl transform translate-x-[50%] left-[30%]" style={{ left: healthData?.dementia_assessment?.score ? `${healthData.dementia_assessment.score}%` : '50%' }}>
               <div className="w-4 h-4 bg-white rounded-full absolute -top-2 -left-1.5 shadow-md"></div>
               <div className="w-4 h-4 bg-white rounded-full absolute -bottom-2 -left-1.5 shadow-md"></div>
@@ -100,7 +113,6 @@ function App() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            {/* Metrics Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               {healthData ? (
                 <>
@@ -108,45 +120,53 @@ function App() {
                   <BreathingCard data={healthData.breathing} />
                 </>
               ) : (
-                <div className="col-span-2 bg-white rounded-3xl p-12 text-center text-gray-400">
-                  <div className="animate-pulse flex flex-col items-center">
-                    <Activity className="w-12 h-12 mb-4 text-purple-300" />
-                    <p className="text-lg">Waiting for voice analysis...</p>
-                    <p className="text-sm mt-2">Start a call in the backend terminal</p>
-                  </div>
-                </div>
+                <>
+                  <CardSkeleton />
+                  <CardSkeleton />
+                </>
               )}
             </div>
 
-            {/* Activity List (Mock Data for Visual Completeness) */}
+            {/* Call Log List */}
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-semibold text-gray-800">Recent Activity</h3>
-                <span className="text-sm text-gray-400 cursor-pointer">Sort v</span>
+                <h3 className="text-xl font-semibold text-gray-800">Call History</h3>
+                <span className="text-sm text-gray-400 cursor-pointer">Live Updates</span>
               </div>
-              <div className="space-y-4">
-                {[
-                  { title: 'Morning Check-in', time: '10:30 AM', duration: '2 mins', icon: '☀️', color: 'bg-orange-100' },
-                  { title: 'Evening Analysis', time: 'Yesterday', duration: '5 mins', icon: '🌙', color: 'bg-purple-100' },
-                ].map((item, i) => (
-                  <div key={i} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition-colors cursor-pointer group">
-                    <div className="flex items-center gap-4">
-                      <div className={`w-12 h-12 rounded-2xl ${item.color} flex items-center justify-center text-xl`}>
-                        {item.icon}
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                {historyData.length > 0 ? (
+                  historyData.map((call, i) => (
+                    <div key={call.session_id} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition-colors cursor-pointer group border border-transparent hover:border-gray-100">
+                      <div className="flex items-center gap-4">
+                        <div className={`w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-500`}>
+                          <Phone className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-800 group-hover:text-blue-600 transition-colors">
+                            Session {call.session_id.split('_')[1] || call.session_id}
+                          </h4>
+                          <div className="flex items-center gap-3 text-sm text-gray-400 mt-0.5">
+                            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {formatDate(call.timestamp)}</span>
+                            <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {call.history.length} exchanges</span>
+                          </div>
+                        </div>
                       </div>
-                      <div>
-                        <h4 className="font-semibold text-gray-800 group-hover:text-purple-600 transition-colors">{item.title}</h4>
-                        <p className="text-sm text-gray-400">{item.time}</p>
+                      <div className="text-right">
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold ${call.health_report?.dementia_assessment?.label === 'Healthy' ? 'bg-green-100 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                          {call.health_report?.dementia_assessment?.label || 'Pending'}
+                        </span>
                       </div>
                     </div>
-                    <span className="text-sm font-medium text-gray-500">{item.duration}</span>
+                  ))
+                ) : (
+                  <div className="text-center py-12 text-gray-400 italic">
+                    No calls recorded yet.
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>
 
-          {/* Side Panel / Spider Graph */}
           <div className="lg:col-span-1 flex flex-col gap-8 h-full">
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 text-center">
               <h3 className="text-gray-500 font-medium mb-2">Overall Health Score</h3>
@@ -154,13 +174,17 @@ function App() {
                 {healthData?.dementia_assessment?.score ? Math.round((healthData.dementia_assessment.score + 80) / 2) : '93'}%
               </div>
               <div className="text-green-500 text-sm font-medium bg-green-50 inline-block px-3 py-1 rounded-full">
-                Excellent Condition
+                {healthData?.dementia_assessment?.label || 'Excellent Condition'}
               </div>
               <div className="mt-8">
-                <SpiderGraph
-                  dementiaData={healthData?.dementia_assessment}
-                  breathingData={healthData?.breathing}
-                />
+                {healthData ? (
+                  <SpiderGraph
+                    dementiaData={healthData?.dementia_assessment}
+                    breathingData={healthData?.breathing}
+                  />
+                ) : (
+                  <GraphSkeleton />
+                )}
               </div>
             </div>
           </div>

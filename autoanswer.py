@@ -338,6 +338,13 @@ def get_health():
     print(f"[API] Serving health report: {latest_health_report.keys() if latest_health_report else 'EMPTY'}")
     return jsonify(latest_health_report)
 
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    global all_calls
+    # Sort by timestamp descending
+    sorted_calls = sorted(all_calls, key=lambda x: x['timestamp'], reverse=True)
+    return jsonify(sorted_calls)
+
 def run_flask():
     print("[Flask] Starting server on port 5000...")
     app.run(host='0.0.0.0', port=5000, use_reloader=False)
