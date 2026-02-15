@@ -36,31 +36,28 @@ const SpiderGraph = ({ dementiaData, breathingData }) => {
     ];
 
     return (
-        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 h-full flex flex-col min-h-[400px]">
-            <h3 className="text-xl font-semibold text-gray-800 mb-2">Overall Score Analysis</h3>
-            <div className="flex-1 w-full relative">
-                <ResponsiveContainer width="100%" height="100%" minHeight={300}>
-                    <RadarChart cx="50%" cy="50%" outerRadius="80%" data={data}>
-                        <PolarGrid stroke="#e5e7eb" />
-                        <PolarAngleAxis dataKey="subject" tick={{ fill: '#6b7280', fontSize: 12 }} />
-                        <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
-                        <Radar
-                            name="Patient"
-                            dataKey="A"
-                            stroke="#8b5cf6"
-                            strokeWidth={3}
-                            fill="url(#colorGradient)"
-                            fillOpacity={0.6}
-                        />
-                        <defs>
-                            <linearGradient id="colorGradient" x1="0" y1="0" x2="1" y2="1">
-                                <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8} />
-                                <stop offset="95%" stopColor="#ec4899" stopOpacity={0.8} />
-                            </linearGradient>
-                        </defs>
-                    </RadarChart>
-                </ResponsiveContainer>
-            </div>
+        <div className="w-full h-full flex flex-col items-center justify-center">
+            <ResponsiveContainer width="100%" height="100%" minHeight={300}>
+                <RadarChart cx="50%" cy="50%" outerRadius="75%" data={data}>
+                    <PolarGrid stroke="#e5e7eb" strokeOpacity={0.5} />
+                    <PolarAngleAxis dataKey="subject" tick={{ fill: '#6b7280', fontSize: 11, fontWeight: 500 }} />
+                    <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+                    <Radar
+                        name="Patient"
+                        dataKey="A"
+                        stroke="#a855f7"
+                        strokeWidth={3}
+                        fill="url(#colorGradient)"
+                        fillOpacity={0.5}
+                    />
+                    <defs>
+                        <linearGradient id="colorGradient" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="5%" stopColor="#a855f7" stopOpacity={0.8} />
+                            <stop offset="95%" stopColor="#ec4899" stopOpacity={0.8} />
+                        </linearGradient>
+                    </defs>
+                </RadarChart>
+            </ResponsiveContainer>
         </div>
     );
 };
