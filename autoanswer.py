@@ -453,7 +453,7 @@ def start_voice_system():
                     threading.Thread(target=play_audio, args=(audio_bytes,)).start()
                 else:
                     no_response_count += 1
-                    print(f"No speech recognized ({no_response_count}/2)")
+                    print(f"No speech recognized ({no_response_count})")
                     idle_timeout = 0  # Reset idle counter on silence detection
             except Exception as e:
                 print(f"Transcription Error: {e}")
