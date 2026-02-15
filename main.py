@@ -47,7 +47,7 @@ app.add_middleware(
 # --- API INITIALIZATION ---
 # Using local Ollama with gemma3:4b model
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:4b"
+OLLAMA_MODEL = "gemma3:12b"
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
@@ -231,21 +231,47 @@ Respond ONLY with valid JSON, no other text."""
         
         diagnosis_response = query_ollama(diagnosis_prompt)
         
-        # Try to parse JSON from response
+        # Try to parse JSON from Ollama's response. The frontend expects
+        # either a structured model explanation (gemini_explanation) or
+        # a local_inference object. We'll return both keys so the UI can
+        # choose the best available data.
+        gemini_explanation = {}
+        local_inference = {}
+
         try:
-            result = json.loads(diagnosis_response)
-        except:
-            # If parsing fails, return the raw response with feature data
-            result = {
-                "label": "Analysis Complete",
-                "score": 50,
+            parsed = json.loads(diagnosis_response)
+            if isinstance(parsed, dict) and ("label" in parsed or "score" in parsed):
+                gemini_explanation = parsed
+            else:
+                # Parsed JSON but doesn't contain expected fields: place into explanation
+                gemini_explanation = {"explanation": parsed}
+        except Exception:
+            # Ollama didn't return strict JSON — fall back to a local heuristic
+            local_inference = {
+                "label": "Unknown",
+                "score": 0,
                 "confidence": "Low",
                 "explanation": diagnosis_response if diagnosis_response else "Analysis completed",
                 "means": means,
                 "stds": stds
             }
-        
-        return JSONResponse(content=result)
+
+        # If Ollama produced a structured explanation, still provide the raw features
+        if not local_inference:
+            local_inference = {
+                "label": gemini_explanation.get("label", "Unknown"),
+                "score": gemini_explanation.get("score", 0),
+                "confidence": gemini_explanation.get("confidence", "Low"),
+                "explanation": gemini_explanation.get("explanation", ""),
+                "means": means,
+                "stds": stds,
+            }
+
+        return JSONResponse(content={
+            "local_inference": local_inference,
+            "gemini_explanation": gemini_explanation,
+            "raw_ollama": diagnosis_response
+        })
 
     except Exception as e:
         print(f"Analysis Crash: {e}")
