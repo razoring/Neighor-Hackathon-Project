@@ -17,6 +17,7 @@ from elevenlabs.client import ElevenLabs
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 from flask import Flask, jsonify
 from flask_cors import CORS
+import winsound
 
 # --- PATH CONFIGURATION ---
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -475,6 +476,7 @@ def start_voice_system():
 
             # Process the recorded clip
             print("[Processing...]")
+            if os.path.exists(os.path.join(project_root, "alert.wav")): winsound.PlaySound(os.path.join(project_root, "alert.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
             temp_wav = os.path.join(temp_folder, f"temp_segment_{len(clips_collected)}.wav")
             wf = wave.open(temp_wav, 'wb')
             wf.setnchannels(CHANNELS)
@@ -580,6 +582,8 @@ def start_voice_system():
                 no_response_count = 0
                 
                 print(">>> System Idle. Waiting for next call...")
+                if os.path.exists(os.path.join(project_root, "alert.wav")):
+                    winsound.PlaySound(os.path.join(project_root, "alert.wav"), winsound.SND_FILENAME | winsound.SND_ASYNC)
                 time.sleep(1)  # Brief pause before listening again
 
     stream.stop_stream()
