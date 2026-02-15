@@ -15,6 +15,8 @@ import whisper
 from pydub import AudioSegment, silence
 from elevenlabs.client import ElevenLabs
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
+from flask import Flask, jsonify
+from flask_cors import CORS
 
 # --- PATH CONFIGURATION ---
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -44,6 +46,10 @@ eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
 # Global State
+app = Flask(__name__)
+CORS(app)
+latest_health_report = {}
+
 is_playing_audio = False
 stop_audio_event = threading.Event()
 no_response_count = 0
@@ -284,7 +290,9 @@ Respond ONLY with valid JSON, no other text."""
 
 def save_and_reset_call():
     """Save current call data and reset for next call."""
-    global session_id, history, clips_collected, idle_timeout, no_response_count
+def save_and_reset_call():
+    """Save current call data and reset for next call."""
+    global session_id, history, clips_collected, idle_timeout, no_response_count, latest_health_report
     
     # Perform health analysis before resetting
     health_report = perform_health_analysis(clips_collected)
@@ -300,6 +308,9 @@ def save_and_reset_call():
     }
     all_calls.append(call_data)
     
+    if health_report:
+        latest_health_report = health_report
+    
     # Delete all audio clips from temp folder
     for clip_path in clips_collected:
         try:
@@ -311,6 +322,14 @@ def save_and_reset_call():
     
     # Return health report for immediate display
     return health_report
+
+@app.route('/health', methods=['GET'])
+def get_health():
+    global latest_health_report
+    return jsonify(latest_health_report)
+
+def run_flask():
+    app.run(host='0.0.0.0', port=5000)
 
 # --- 1. SOUND OUTPUT (SPEAKERS) ---
 def play_audio(audio_bytes):
@@ -511,6 +530,8 @@ def start_voice_system():
     p.terminate()
 
 if __name__ == "__main__":
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     start_voice_system()
     
     # Print overall session summary when manually stopped
