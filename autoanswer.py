@@ -206,11 +206,12 @@ def perform_health_analysis(session_clips):
                     mean_interval = float(np.mean(intervals))
                     breath_rate_bpm = 60.0 / mean_interval if mean_interval > 0 else 0.0
                     cv = float(np.std(intervals) / mean_interval) if mean_interval > 0 else None
-                    irregular = (cv is not None and cv > 0.35) or (len(times) < 3)
+                    # Irregular: Higher variability (CV > 0.5) OR too few breaths (< 5) indicating pauses
+                    irregular = (cv is not None and cv > 0.5) or (len(times) < 5)
 
-                # Laboured heuristics: very fast breathing or very high envelope energy
+                # Laboured heuristics: rapid breathing (> 28 BPM) or extreme energy spikes
                 laboured = False
-                if breath_rate_bpm > 24 or env_smooth.mean() > (env.mean() * 2.0):
+                if breath_rate_bpm > 28 or env_smooth.mean() > (env.mean() * 3.0):
                     laboured = True
 
                 details = {
