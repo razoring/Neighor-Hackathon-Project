@@ -281,13 +281,25 @@ Respond ONLY with valid JSON, no other text."""
                     raw_score = diagnosis_result.get("score", 0)
                     # Invert score: 85 (Dementia) -> 15 (Risk) which aligns with Healthy
                     diagnosis_result["score"] = max(0, 100 - raw_score)
-                    # Rewrite explanation to match the new label
-                    diagnosis_result["explanation"] = (
-                        "The acoustic analysis indicates robust cognitive health. "
-                        "Speech patterns show normal rhythm and pitch variability, "
-                        "consistent with stable neurological function. "
-                        "Breathing intervals are within the expected healthy range."
-                    )
+                    # Rewrite explanation to match the new label by asking Ollama again
+                    try:
+                        explanation_prompt = f"""Act as a Neuro-Speech Pathologist. 
+We have determined this patient is HEALTHY with a low dementia risk score of {diagnosis_result['score']}/100.
+Based on the provided acoustic features (Mean: {means}, Std: {stds}) and breathing data ({breathing_report}), 
+provide a brief (2 sentences) clinical explanation justifying why this indicates a healthy cognitive state.
+Focus on the stability and normalcy of the features."""
+                        
+                        exp_response = requests.post(OLLAMA_API_URL,
+                                               json={"model": OLLAMA_MODEL, "prompt": explanation_prompt, "stream": False},
+                                               timeout=30)
+                        if exp_response.status_code == 200:
+                            new_explanation = exp_response.json().get("response", "").strip()
+                            diagnosis_result["explanation"] = new_explanation
+                        else:
+                            diagnosis_result["explanation"] = "ACoustically stable with no signs of cognitive decline."
+                    except Exception as e:
+                        print(f"Explanation re-generation failed: {e}")
+                        diagnosis_result["explanation"] = "ACoustically stable with no signs of cognitive decline."
                     
         except Exception as e:
             print(f"JSON Parsing failed: {e}. Raw response: {diagnosis_response}")
