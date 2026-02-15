@@ -4,7 +4,7 @@ import { Activity, LayoutDashboard, Settings, User, Phone, Calendar, Clock } fro
 import DementiaCard from './components/DementiaCard';
 import BreathingCard from './components/BreathingCard';
 import SpiderGraph from './components/SpiderGraph';
-import Skeleton, { CardSkeleton, GraphSkeleton } from './components/Skeleton';
+
 
 function App() {
   const [healthData, setHealthData] = useState(null);
@@ -120,10 +120,13 @@ function App() {
                   <BreathingCard data={healthData.breathing} />
                 </>
               ) : (
-                <>
-                  <CardSkeleton />
-                  <CardSkeleton />
-                </>
+                <div className="col-span-2 bg-white rounded-3xl p-12 text-center text-gray-400">
+                  <div className="animate-pulse flex flex-col items-center">
+                    <Activity className="w-12 h-12 mb-4 text-purple-300" />
+                    <p className="text-lg">Waiting for voice analysis...</p>
+                    <p className="text-sm mt-2">Start a call in the backend terminal</p>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -183,7 +186,9 @@ function App() {
                     breathingData={healthData?.breathing}
                   />
                 ) : (
-                  <GraphSkeleton />
+                  <div className="h-[300px] flex items-center justify-center text-gray-300">
+                    Waiting for data...
+                  </div>
                 )}
               </div>
             </div>
