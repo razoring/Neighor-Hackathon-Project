@@ -12,7 +12,7 @@ import wave
 import threading
 from dotenv import load_dotenv
 import whisper
-from pydub import AudioSegment
+from pydub import AudioSegment, silence
 from elevenlabs.client import ElevenLabs
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 
@@ -52,6 +52,7 @@ clips_collected = []  # Store audio clips for final analysis
 idle_timeout = 0  # Track seconds of idle silence
 IDLE_LIMIT = 10.0  # 10 seconds of silence before ending call
 all_calls = []  # Store all call sessions
+barge_in_enabled = False  # Flag to prevent barge-in on TTS startup
 
 # --- MODELS ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,9 +86,132 @@ def is_sound_detected(audio_chunk, threshold_db=THRESHOLD_DB):
     db = rms_to_db(rms)
     return db > threshold_db
 
+def trim_silence_pydub(audio_path: str):
+    """Removes silence from audio using pydub."""
+    try:
+        audio = AudioSegment.from_file(audio_path)
+        chunks = silence.split_on_silence(
+            audio, min_silence_len=600, silence_thresh=audio.dBFS - 16
+        )
+        output = AudioSegment.empty()
+        for chunk in chunks:
+            output += chunk
+        
+        trimmed_path = audio_path.replace(".wav", "_trimmed.wav")
+        output.export(trimmed_path, format="wav")
+        return trimmed_path
+    except Exception as e:
+        print(f"Silence trimming failed: {e}")
+        return audio_path
+
+def extract_acoustic_features(audio_path: str):
+    """Extracts high-level embeddings from the DementiaBank model."""
+    try:
+        # Load audio (downsample to 16kHz for Wav2Vec2)
+        y, sr = librosa.load(audio_path, sr=16000)
+        inputs = processor(y, sampling_rate=16000, return_tensors="pt", padding=True).to(device)
+        
+        with torch.no_grad():
+            outputs = wav_model(**inputs)
+        
+        # Get mean and std of the last hidden states
+        embeddings = outputs.last_hidden_state.cpu()
+        mean_feats = torch.mean(embeddings, dim=1).numpy().tolist()[0]
+        std_feats = torch.std(embeddings, dim=1).numpy().tolist()[0]
+        
+        # Return a subset (first 15 dimensions) to provide as context
+        return mean_feats[:15], std_feats[:15]
+    except Exception as e:
+        print(f"Feature Extraction Error: {e}")
+        return None, None
+
+def perform_dementia_analysis(session_clips):
+    """Perform dementia analysis on collected audio clips."""
+    if not session_clips:
+        return None
+    
+    try:
+        # Combine all clips
+        combined_audio = AudioSegment.empty()
+        for clip_path in session_clips:
+            try:
+                combined_audio += AudioSegment.from_file(clip_path)
+            except Exception as e:
+                print(f"Warning: Could not load {clip_path}: {e}")
+                continue
+        
+        if len(combined_audio) == 0:
+            return None
+        
+        # Export combined audio temporarily
+        combined_path = os.path.join(temp_folder, "combined_analysis.wav")
+        combined_audio.export(combined_path, format="wav")
+        
+        # Trim silence
+        trimmed_path = trim_silence_pydub(combined_path)
+        
+        # Extract features
+        means, stds = extract_acoustic_features(trimmed_path)
+        
+        if means is None or stds is None:
+            return None
+        
+        # Query Ollama for diagnosis
+        diagnosis_prompt = f"""Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the 
+Shields Wav2Vec2 DementiaBank model. 
+
+Acoustic Feature Fingerprint (Mean): {means}
+Acoustic Feature Fingerprint (Std): {stds}
+
+Based on these high-dimensional embeddings, determine the likelihood of cognitive impairment. 
+Respond in JSON format:
+{{
+    "label": "Dementia" or "Healthy",
+    "score": 0-100,
+    "confidence": "High" | "Medium" | "Low",
+    "explanation": "Explain how the acoustic features led to this result."
+}}
+
+Respond ONLY with valid JSON, no other text."""
+        
+        try:
+            response = requests.post(OLLAMA_API_URL,
+                                   json={"model": OLLAMA_MODEL, "prompt": diagnosis_prompt, "stream": False},
+                                   timeout=60)
+            diagnosis_response = response.json().get("response", "") if response.status_code == 200 else ""
+        except Exception as e:
+            print(f"Ollama Error: {e}")
+            diagnosis_response = ""
+        
+        # Try to parse JSON
+        diagnosis_result = {}
+        try:
+            parsed = json.loads(diagnosis_response)
+            if isinstance(parsed, dict):
+                diagnosis_result = parsed
+        except:
+            diagnosis_result = {"explanation": diagnosis_response}
+        
+        # Cleanup temp files
+        try:
+            if os.path.exists(combined_path):
+                os.remove(combined_path)
+            if os.path.exists(trimmed_path):
+                os.remove(trimmed_path)
+        except:
+            pass
+        
+        return diagnosis_result
+    except Exception as e:
+        print(f"Analysis Error: {e}")
+        return None
+
 def save_and_reset_call():
     """Save current call data and reset for next call."""
     global session_id, history, clips_collected, idle_timeout, no_response_count
+    
+    # Perform dementia analysis before resetting
+    diagnosis = perform_dementia_analysis(clips_collected)
     
     # Save current call to all_calls list
     call_data = {
@@ -95,7 +219,8 @@ def save_and_reset_call():
         "clips": clips_collected.copy(),
         "history": history.copy(),
         "no_response_count": no_response_count,
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "diagnosis": diagnosis
     }
     all_calls.append(call_data)
     
@@ -118,8 +243,9 @@ def save_and_reset_call():
 # --- 1. SOUND OUTPUT (SPEAKERS) ---
 def play_audio(audio_bytes):
     """Plays audio bytes to system speakers with interrupt support."""
-    global is_playing_audio
+    global is_playing_audio, barge_in_enabled
     is_playing_audio = True
+    barge_in_enabled = False  # Disable barge-in initially
     stop_audio_event.clear()
     
     # Convert ElevenLabs MP3 to raw PCM for PyAudio
@@ -130,6 +256,10 @@ def play_audio(audio_bytes):
                     channels=audio.channels,
                     rate=audio.frame_rate,
                     output=True)
+    
+    # Wait 0.5 seconds before enabling barge-in to avoid detecting TTS startup noise
+    time.sleep(0.5)
+    barge_in_enabled = True
     
     data = audio.raw_data
     chunk_size = 1024
@@ -142,6 +272,7 @@ def play_audio(audio_bytes):
     stream.close()
     p.terminate()
     is_playing_audio = False
+    barge_in_enabled = False
 
 # --- 2. CORE LOGIC ---
 def get_ai_response(text):
@@ -171,7 +302,7 @@ def start_voice_system():
         data = stream.read(CHUNK, exception_on_overflow=False)
 
         # BARGE-IN: If AI is talking and you shout, AI stops talking
-        if is_playing_audio and is_sound_detected(data, THRESHOLD_DB + 5):  # Higher threshold for interrupt
+        if is_playing_audio and barge_in_enabled and is_sound_detected(data, THRESHOLD_DB + 5):  # Higher threshold for interrupt
             stop_audio_event.set()
             print("\n[Barge-in detected]")
             time.sleep(0.1)  # Brief pause before listening
@@ -266,6 +397,19 @@ def start_voice_system():
                     print(f"  {i}. User: {exchange['u']}")
                     print(f"     AI: {exchange['a']}")
                 print(f"No-Response Count: {no_response_count}")
+                
+                # Show dementia analysis if available
+                if len(all_calls) > 0 and all_calls[-1].get("diagnosis"):
+                    diagnosis = all_calls[-1]["diagnosis"]
+                    print("\n>>> DEMENTIA ANALYSIS ===")
+                    if "label" in diagnosis:
+                        print(f"Assessment: {diagnosis.get('label', 'Unknown')}")
+                        print(f"Score: {diagnosis.get('score', 'N/A')}/100")
+                        print(f"Confidence: {diagnosis.get('confidence', 'Unknown')}")
+                    if "explanation" in diagnosis:
+                        print(f"Explanation: {diagnosis['explanation']}")
+                    print("=== END DEMENTIA ANALYSIS ===")
+                
                 print("=== END CALL ANALYSIS ===\n")
                 
                 # Save call data and reset for next call
@@ -288,4 +432,7 @@ if __name__ == "__main__":
         print(f"  Clips: {len(call['clips'])}")
         print(f"  Exchanges: {len(call['history'])}")
         print(f"  No-Response Count: {call['no_response_count']}")
+        if call.get("diagnosis"):
+            diagnosis = call["diagnosis"]
+            print(f"  Diagnosis: {diagnosis.get('label', 'Unknown')} (Score: {diagnosis.get('score', 'N/A')}, Confidence: {diagnosis.get('confidence', 'Unknown')})")
     print("=== END SESSION SUMMARY ===\n")
