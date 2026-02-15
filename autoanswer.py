@@ -133,7 +133,7 @@ def extract_acoustic_features(audio_path: str):
         print(f"Feature Extraction Error: {e}")
         return None, None
 
-def perform_health_analysis(session_clips):
+def perform_health_analysis(session_clips, conversation_history=None):
     """Perform a health report (dementia + breathing) on collected audio clips."""
     if not session_clips:
         return None
@@ -231,6 +231,13 @@ def perform_health_analysis(session_clips):
         if means is None or stds is None:
             return None
         
+        # Format conversation history for the prompt
+        transcript_context = ""
+        if conversation_history:
+            transcript_context = "\nConversation Transcript:\n"
+            for exchange in conversation_history:
+                transcript_context += f"Patient: {exchange.get('u', '')}\nAI: {exchange.get('a', '')}\n"
+
         # Query Ollama for diagnosis (now part of a broader health report)
         diagnosis_prompt = f"""Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the
 Shields Wav2Vec2 DementiaBank model.
@@ -239,14 +246,15 @@ Acoustic Feature Fingerprint (Mean): {means}
 Acoustic Feature Fingerprint (Std): {stds}
 
 Breathing/Respiratory Summary: {breathing_report}
+{transcript_context}
 
-Based on these high-dimensional embeddings and the breathing summary, determine the likelihood of cognitive
+Based on these high-dimensional embeddings, the breathing summary, and the content of the conversation (looking for repetition, confusion, or short answers), determine the likelihood of cognitive
 impairment and any notable breathing-related observations. Respond in JSON format:
 {{
     "label": "Dementia" or "Healthy",
     "score": 0-100,
     "confidence": "High" | "Medium" | "Low",
-    "explanation": "Explain how the acoustic features and breathing observations led to this result."
+    "explanation": "Explain how the acoustic features, breathing observations, and different linguistic patterns led to this result."
 }}
 
 Respond ONLY with valid JSON, no other text."""
@@ -286,9 +294,12 @@ Respond ONLY with valid JSON, no other text."""
                     try:
                         explanation_prompt = f"""Act as a Neuro-Speech Pathologist. 
 We have determined this patient is HEALTHY with a low dementia risk score of {diagnosis_result['score']}/100.
-Based on the provided acoustic features (Mean: {means}, Std: {stds}) and breathing data ({breathing_report}), 
-provide a brief (2 sentences) clinical explanation justifying why this indicates a healthy cognitive state.
-Focus on the stability and normalcy of the features."""
+Based on the provided acoustic features (Mean: {means}, Std: {stds}), breathing data ({breathing_report}),
+and the conversation transcript:
+{transcript_context}
+
+Provide a brief (2 sentences) clinical explanation justifying why this indicates a healthy cognitive state.
+Focus on the stability, normalcy of the features, and linguistic coherence."""
                         
                         exp_response = requests.post(OLLAMA_API_URL,
                                                json={"model": OLLAMA_MODEL, "prompt": explanation_prompt, "stream": False},
@@ -297,10 +308,10 @@ Focus on the stability and normalcy of the features."""
                             new_explanation = exp_response.json().get("response", "").strip()
                             diagnosis_result["explanation"] = new_explanation
                         else:
-                            diagnosis_result["explanation"] = "ACoustically stable with no signs of cognitive decline."
+                            diagnosis_result["explanation"] = "Acoustically stable with no signs of cognitive decline."
                     except Exception as e:
                         print(f"Explanation re-generation failed: {e}")
-                        diagnosis_result["explanation"] = "ACoustically stable with no signs of cognitive decline."
+                        diagnosis_result["explanation"] = "Acoustically stable with no signs of cognitive decline."
                     
         except Exception as e:
             print(f"JSON Parsing failed: {e}. Raw response: {diagnosis_response}")
@@ -328,12 +339,10 @@ Focus on the stability and normalcy of the features."""
 
 def save_and_reset_call():
     """Save current call data and reset for next call."""
-def save_and_reset_call():
-    """Save current call data and reset for next call."""
     global session_id, history, clips_collected, idle_timeout, no_response_count, latest_health_report
     
     # Perform health analysis before resetting
-    health_report = perform_health_analysis(clips_collected)
+    health_report = perform_health_analysis(clips_collected, conversation_history=history)
     
     # Save current call to all_calls list
     call_data = {
