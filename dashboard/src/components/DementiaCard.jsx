@@ -38,7 +38,7 @@ const DementiaCard = ({ data }) => {
                 </div>
                 <div className="w-full bg-gray-200/50 rounded-full h-2">
                     <div
-                        className={`h-2 rounded-full shadow-sm ${confidence === 'High' ? 'bg-gradient-to-r from-green-400 to-emerald-500' : confidence === 'Medium' ? 'bg-yellow-400' : 'bg-red-400'}`}
+                        className={`h-2 rounded-full shadow-sm ${isHealthy ? 'bg-gradient-to-r from-green-400 to-emerald-500' : 'bg-gradient-to-r from-red-500 to-pink-600'}`}
                         style={{ width: confidence === 'High' ? '90%' : confidence === 'Medium' ? '60%' : '30%' }}
                     ></div>
                 </div>

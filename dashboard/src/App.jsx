@@ -98,7 +98,7 @@ function App() {
           </div>
 
           {/* Gradient Bar */}
-          <div className="h-16 w-full rounded-2xl bg-gradient-to-r from-purple-400 via-yellow-300 to-red-400 relative mt-6 opacity-90">
+          <div className="h-16 w-full rounded-2xl bg-gradient-to-r from-green-400 via-yellow-300 to-red-400 relative mt-6 opacity-90">
             <div className="absolute top-0 bottom-0 w-1 bg-white shadow-xl transform translate-x-[50%] left-[30%]" style={{ left: healthData?.dementia_assessment?.score ? `${healthData.dementia_assessment.score}%` : '50%' }}>
               <div className="w-4 h-4 bg-white rounded-full absolute -top-2 -left-1.5 shadow-md"></div>
               <div className="w-4 h-4 bg-white rounded-full absolute -bottom-2 -left-1.5 shadow-md"></div>
@@ -174,7 +174,7 @@ function App() {
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 text-center">
               <h3 className="text-gray-500 font-medium mb-2">Overall Health Score</h3>
               <div className="text-6xl font-bold text-gray-800 mb-1">
-                {healthData?.dementia_assessment?.score ? Math.round((healthData.dementia_assessment.score + 80) / 2) : '0'}%
+                {healthData?.dementia_assessment?.score ? 100 - healthData.dementia_assessment.score : '0'}%
               </div>
               <div className="text-green-500 text-sm font-medium bg-green-50 inline-block px-3 py-1 rounded-full">
                 {healthData?.dementia_assessment?.label || 'Excellent Condition'}
