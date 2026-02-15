@@ -310,6 +310,7 @@ def save_and_reset_call():
     
     if health_report:
         latest_health_report = health_report
+        print(f"[Backend] Updated latest_health_report: {latest_health_report.keys()}")
     
     # Delete all audio clips from temp folder
     for clip_path in clips_collected:
@@ -326,10 +327,12 @@ def save_and_reset_call():
 @app.route('/health', methods=['GET'])
 def get_health():
     global latest_health_report
+    print(f"[API] Serving health report: {latest_health_report.keys() if latest_health_report else 'EMPTY'}")
     return jsonify(latest_health_report)
 
 def run_flask():
-    app.run(host='0.0.0.0', port=5000)
+    print("[Flask] Starting server on port 5000...")
+    app.run(host='0.0.0.0', port=5000, use_reloader=False)
 
 # --- 1. SOUND OUTPUT (SPEAKERS) ---
 def play_audio(audio_bytes):
