@@ -6,6 +6,8 @@ import json
 import torch
 import librosa
 import numpy as np
+from scipy.io import wavfile
+import requests
 from dotenv import load_dotenv
 
 # --- SET FFMPEG PATH FIRST (before importing pydub) ---
@@ -20,8 +22,6 @@ os.environ["PATH"] = os.path.dirname(ffmpeg_path) + os.pathsep + os.environ.get(
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
-from google import genai
-from google.genai import types
 from elevenlabs.client import ElevenLabs
 from pydub import AudioSegment, silence
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
@@ -45,11 +45,10 @@ app.add_middleware(
 )
 
 # --- API INITIALIZATION ---
-# Using the modern google-genai SDK
-genai_client = genai.Client(api_key=os.getenv("GEMINI"))
+# Using local Ollama with gemma3:4b model
+OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "gemma3:4b"
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
-
-GEMINI_MODEL = "gemini-2.0-flash"
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
 # Storage
@@ -71,6 +70,23 @@ except Exception as e:
     wav_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(device)
 
 # --- HELPERS ---
+
+def query_ollama(prompt: str) -> str:
+    """Query local Ollama model."""
+    try:
+        response = requests.post(
+            OLLAMA_API_URL,
+            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            timeout=60
+        )
+        if response.status_code == 200:
+            return response.json().get("response", "")
+        else:
+            print(f"Ollama Error: {response.status_code}")
+            return ""
+    except Exception as e:
+        print(f"Ollama Connection Error: {e}")
+        return ""
 
 def text_to_speech(text: str):
     """ElevenLabs TTS conversion."""
@@ -132,39 +148,19 @@ async def chat_endpoint(file: UploadFile = File(...), session_id: str = Form(...
     session_dir = os.path.join(SESSION_STORAGE, session_id)
     os.makedirs(session_dir, exist_ok=True)
     
-    # Save user audio
-    user_filename = f"user_{int(time.time())}.wav"
+    # Save user audio (keep original format, pydub will handle conversion)
+    user_filename = f"user_{int(time.time())}.webm"
     user_audio_path = os.path.join(session_dir, user_filename)
+    
     with open(user_audio_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Friendly Chat Logic with Gemini
-    # Note: For a hackathon, we assume the user is speaking naturally. 
-    # You could use Gemini's multimodal power to 'listen' to the audio here.
-    prompt = f"""
-    You are a friendly, caring phone companion named Rachel. 
-    You are having a casual chat with an elderly person. 
-    Keep your response very warm, short (1-2 sentences), and ask a simple follow-up question.
-    History: {history}
-    """
+    # Friendly Chat Logic with Ollama
+    prompt = open("prompt.txt","r").read()
     
-    try:
-        response = genai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt
-        )
-        response_text = response.text
-    except Exception as e:
-        print(f"Gemini Chat Error with {GEMINI_MODEL}: {e}")
-        try:
-            # Fallback to gemini-pro
-            response = genai_client.models.generate_content(
-                model="gemini-pro",
-                contents=prompt
-            )
-            response_text = response.text
-        except:
-            response_text = "It's so good to hear from you. How has your morning been?"
+    response_text = query_ollama(prompt)
+    if not response_text or len(response_text.strip()) == 0:
+        response_text = "It's so good to hear from you. How has your morning been?"
 
     return JSONResponse(content={"response_text": response_text})
 
@@ -192,7 +188,16 @@ async def analyze_full_session(session_id: str = Form(...)):
     try:
         combined_audio = AudioSegment.empty()
         for f in user_files:
-            combined_audio += AudioSegment.from_file(os.path.join(session_dir, f))
+            audio_file_path = os.path.join(session_dir, f)
+            # AudioSegment will handle webm, wav, or other formats via ffmpeg
+            try:
+                combined_audio += AudioSegment.from_file(audio_file_path)
+            except Exception as load_err:
+                print(f"Warning: Could not load {f}: {load_err}")
+                continue
+        
+        if len(combined_audio) == 0:
+            return JSONResponse(status_code=400, content={"error": "No valid audio data found"})
         
         full_path = os.path.join(session_dir, "full_conversation.wav")
         combined_audio.export(full_path, format="wav")
@@ -206,13 +211,41 @@ async def analyze_full_session(session_id: str = Form(...)):
         if means is None or stds is None:
             return JSONResponse(status_code=500, content={"error": "Feature extraction failed"})
         
-        # Return raw features for testing (without Gemini analysis)
-        return JSONResponse(content={
-            "label": "Feature Extraction Success",
-            "means": means,
-            "stds": stds,
-            "message": "Acoustic features extracted successfully"
-        })
+        # 4. Expert Interpretation using Ollama
+        diagnosis_prompt = f"""Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the 
+Shields Wav2Vec2 DementiaBank model. 
+
+Acoustic Feature Fingerprint (Mean): {means}
+Acoustic Feature Fingerprint (Std): {stds}
+
+Based on these high-dimensional embeddings, determine the likelihood of cognitive impairment. 
+Respond in JSON format:
+{{
+    "label": "Dementia" or "Healthy",
+    "score": 0-100,
+    "confidence": "High" | "Medium" | "Low",
+    "explanation": "Explain how the acoustic features led to this result."
+}}
+
+Respond ONLY with valid JSON, no other text."""
+        
+        diagnosis_response = query_ollama(diagnosis_prompt)
+        
+        # Try to parse JSON from response
+        try:
+            result = json.loads(diagnosis_response)
+        except:
+            # If parsing fails, return the raw response with feature data
+            result = {
+                "label": "Analysis Complete",
+                "score": 50,
+                "confidence": "Low",
+                "explanation": diagnosis_response if diagnosis_response else "Analysis completed",
+                "means": means,
+                "stds": stds
+            }
+        
+        return JSONResponse(content=result)
 
     except Exception as e:
         print(f"Analysis Crash: {e}")
