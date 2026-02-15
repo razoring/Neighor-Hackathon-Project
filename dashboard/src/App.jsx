@@ -174,7 +174,7 @@ function App() {
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 text-center">
               <h3 className="text-gray-500 font-medium mb-2">Overall Health Score</h3>
               <div className="text-6xl font-bold text-gray-800 mb-1">
-                {healthData?.dementia_assessment?.score ? Math.round((healthData.dementia_assessment.score + 80) / 2) : '93'}%
+                {healthData?.dementia_assessment?.score ? Math.round((healthData.dementia_assessment.score + 80) / 2) : '0'}%
               </div>
               <div className="text-green-500 text-sm font-medium bg-green-50 inline-block px-3 py-1 rounded-full">
                 {healthData?.dementia_assessment?.label || 'Excellent Condition'}
