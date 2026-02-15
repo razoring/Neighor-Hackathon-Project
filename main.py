@@ -47,7 +47,7 @@ app.add_middleware(
 # --- API INITIALIZATION ---
 # Using local Ollama with gemma3:4b model
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:12b"
+OLLAMA_MODEL = "pheem49/Luna:4b"
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
