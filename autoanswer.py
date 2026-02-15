@@ -127,8 +127,8 @@ def extract_acoustic_features(audio_path: str):
         print(f"Feature Extraction Error: {e}")
         return None, None
 
-def perform_dementia_analysis(session_clips):
-    """Perform dementia analysis on collected audio clips."""
+def perform_health_analysis(session_clips):
+    """Perform a health report (dementia + breathing) on collected audio clips."""
     if not session_clips:
         return None
     
@@ -154,24 +154,92 @@ def perform_dementia_analysis(session_clips):
         
         # Extract features
         means, stds = extract_acoustic_features(trimmed_path)
+
+        # --- New: Breathing / respiratory pattern detection ---
+        def detect_breathing_patterns(audio_path: str):
+            """Detect basic breathing patterns from audio and return metrics.
+
+            Approach (lightweight, no extra deps):
+            - Load audio at 16kHz
+            - Compute short-time energy (RMS) envelope
+            - Find local peaks in the envelope as breath events
+            - Compute inter-breath intervals -> breaths per minute and variability
+            - Simple heuristics to flag irregular or laboured breathing
+            """
+            try:
+                y, sr = librosa.load(audio_path, sr=16000)
+                if len(y) == 0:
+                    return None
+
+                # RMS energy envelope
+                frame_length = 2048
+                hop_length = 512
+                env = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+                # Smooth envelope with small moving average
+                win = 5
+                if len(env) >= win:
+                    env_smooth = np.convolve(env, np.ones(win) / win, mode="same")
+                else:
+                    env_smooth = env
+
+                # Peak detection (simple): local maxima above mean*1.1
+                thresh = max(env_smooth.mean() * 1.1, np.percentile(env_smooth, 60) * 0.5)
+                peaks = []
+                for i in range(1, len(env_smooth) - 1):
+                    if env_smooth[i] > env_smooth[i - 1] and env_smooth[i] > env_smooth[i + 1] and env_smooth[i] > thresh:
+                        peaks.append(i)
+
+                times = [p * hop_length / sr for p in peaks]
+                intervals = np.diff(times) if len(times) >= 2 else np.array([])
+
+                if len(intervals) == 0:
+                    breath_rate_bpm = 0.0
+                    cv = None
+                    irregular = False
+                else:
+                    mean_interval = float(np.mean(intervals))
+                    breath_rate_bpm = 60.0 / mean_interval if mean_interval > 0 else 0.0
+                    cv = float(np.std(intervals) / mean_interval) if mean_interval > 0 else None
+                    irregular = (cv is not None and cv > 0.35) or (len(times) < 3)
+
+                # Laboured heuristics: very fast breathing or very high envelope energy
+                laboured = False
+                if breath_rate_bpm > 24 or env_smooth.mean() > (env.mean() * 2.0):
+                    laboured = True
+
+                details = {
+                    "breath_rate_bpm": round(float(breath_rate_bpm), 2),
+                    "interval_cv": None if cv is None else round(float(cv), 3),
+                    "num_breath_events": len(times),
+                    "irregular": bool(irregular),
+                    "laboured": bool(laboured),
+                }
+                return details
+            except Exception as e:
+                print(f"Breathing detection error: {e}")
+                return None
+
+        breathing_report = detect_breathing_patterns(trimmed_path)
         
         if means is None or stds is None:
             return None
         
-        # Query Ollama for diagnosis
-        diagnosis_prompt = f"""Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the 
-Shields Wav2Vec2 DementiaBank model. 
+        # Query Ollama for diagnosis (now part of a broader health report)
+        diagnosis_prompt = f"""Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the
+Shields Wav2Vec2 DementiaBank model.
 
 Acoustic Feature Fingerprint (Mean): {means}
 Acoustic Feature Fingerprint (Std): {stds}
 
-Based on these high-dimensional embeddings, determine the likelihood of cognitive impairment. 
-Respond in JSON format:
+Breathing/Respiratory Summary: {breathing_report}
+
+Based on these high-dimensional embeddings and the breathing summary, determine the likelihood of cognitive
+impairment and any notable breathing-related observations. Respond in JSON format:
 {{
     "label": "Dementia" or "Healthy",
     "score": 0-100,
     "confidence": "High" | "Medium" | "Low",
-    "explanation": "Explain how the acoustic features led to this result."
+    "explanation": "Explain how the acoustic features and breathing observations led to this result."
 }}
 
 Respond ONLY with valid JSON, no other text."""
@@ -193,7 +261,13 @@ Respond ONLY with valid JSON, no other text."""
                 diagnosis_result = parsed
         except:
             diagnosis_result = {"explanation": diagnosis_response}
-        
+
+        # Build a consolidated health report that includes both diagnosis_result and breathing_report
+        health_report = {
+            "dementia_assessment": diagnosis_result,
+            "breathing": breathing_report,
+        }
+
         # Cleanup temp files
         try:
             if os.path.exists(combined_path):
@@ -202,8 +276,8 @@ Respond ONLY with valid JSON, no other text."""
                 os.remove(trimmed_path)
         except:
             pass
-        
-        return diagnosis_result
+
+        return health_report
     except Exception as e:
         print(f"Analysis Error: {e}")
         return None
@@ -212,8 +286,8 @@ def save_and_reset_call():
     """Save current call data and reset for next call."""
     global session_id, history, clips_collected, idle_timeout, no_response_count
     
-    # Perform dementia analysis before resetting
-    diagnosis = perform_dementia_analysis(clips_collected)
+    # Perform health analysis before resetting
+    health_report = perform_health_analysis(clips_collected)
     
     # Save current call to all_calls list
     call_data = {
@@ -222,7 +296,7 @@ def save_and_reset_call():
         "history": history.copy(),
         "no_response_count": no_response_count,
         "timestamp": time.time(),
-        "diagnosis": diagnosis
+        "health_report": health_report
     }
     all_calls.append(call_data)
     
@@ -235,8 +309,8 @@ def save_and_reset_call():
         except Exception as e:
             print(f"Error deleting {clip_path}: {e}")
     
-    # Return diagnosis for immediate display
-    return diagnosis
+    # Return health report for immediate display
+    return health_report
 
 # --- 1. SOUND OUTPUT (SPEAKERS) ---
 def play_audio(audio_bytes):
@@ -352,7 +426,7 @@ def start_voice_system():
 
                     # ElevenLabs TTS
                     audio_stream = eleven_client.text_to_speech.convert(
-                        text=reply, voice_id="5u41aNhyCU6hXOcjPPv0", model_id="eleven_flash_v2_5"
+                        text=reply, voice_id="hpp4J3VqNfWAUOO0d1Us", model_id="eleven_flash_v2_5"
                     )
                     audio_bytes = b"".join(chunk for chunk in audio_stream)
                     
@@ -396,17 +470,29 @@ def start_voice_system():
                     print(f"     AI: {exchange['a']}")
                 print(f"No-Response Count: {no_response_count}")
                 
-                # Show dementia analysis if available
-                diagnosis = save_and_reset_call()
-                if diagnosis:
-                    print("\n>>> DEMENTIA ANALYSIS ===")
-                    if "label" in diagnosis:
-                        print(f"Assessment: {diagnosis.get('label', 'Unknown')}")
-                        print(f"Score: {diagnosis.get('score', 'N/A')}/100")
-                        print(f"Confidence: {diagnosis.get('confidence', 'Unknown')}")
-                    if "explanation" in diagnosis:
-                        print(f"Explanation: {diagnosis['explanation']}")
-                    print("=== END DEMENTIA ANALYSIS ===")
+                # Show consolidated health report if available
+                health_report = save_and_reset_call()
+                if health_report:
+                    print("\n>>> HEALTH REPORT ===")
+                    da = health_report.get("dementia_assessment", {})
+                    if da:
+                        print("-- Cognitive Assessment --")
+                        print(f"Assessment: {da.get('label', 'Unknown')}")
+                        print(f"Score: {da.get('score', 'N/A')}/100")
+                        print(f"Confidence: {da.get('confidence', 'Unknown')}")
+                        if da.get('explanation'):
+                            print(f"Explanation: {da.get('explanation')}")
+
+                    br = health_report.get("breathing")
+                    if br:
+                        print("-- Breathing / Respiratory Summary --")
+                        print(f"Breaths/min: {br.get('breath_rate_bpm', 'N/A')}")
+                        print(f"Breath events: {br.get('num_breath_events', 'N/A')}")
+                        print(f"Interval CV: {br.get('interval_cv', 'N/A')}")
+                        print(f"Irregular: {br.get('irregular', False)}")
+                        print(f"Laboured: {br.get('laboured', False)}")
+
+                    print("=== END HEALTH REPORT ===")
                 
                 print("=== END CALL ANALYSIS ===\n")
                 
