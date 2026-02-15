@@ -8,6 +8,14 @@ import librosa
 import numpy as np
 from dotenv import load_dotenv
 
+# --- SET FFMPEG PATH FIRST (before importing pydub) ---
+project_root = os.path.dirname(os.path.abspath(__file__))
+ffmpeg_path = os.path.join(project_root, r"bin\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe")
+ffprobe_path = os.path.join(project_root, r"bin\ffmpeg-8.0.1-essentials_build\bin\ffprobe.exe")
+
+# Set environment before importing pydub
+os.environ["PATH"] = os.path.dirname(ffmpeg_path) + os.pathsep + os.environ.get("PATH", "")
+
 # API & Framework
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +25,10 @@ from google.genai import types
 from elevenlabs.client import ElevenLabs
 from pydub import AudioSegment, silence
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
+
+# Set pydub paths after import
+AudioSegment.converter = ffmpeg_path
+AudioSegment.ffprobe = ffprobe_path
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +49,7 @@ app.add_middleware(
 genai_client = genai.Client(api_key=os.getenv("GEMINI"))
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
 # Storage
@@ -78,7 +90,7 @@ def trim_silence_pydub(audio_path: str):
     try:
         audio = AudioSegment.from_file(audio_path)
         chunks = silence.split_on_silence(
-            audio, min_silence_len=600, silence_thresh=audio.dbFS - 16
+            audio, min_silence_len=600, silence_thresh=audio.dBFS - 16
         )
         output = AudioSegment.empty()
         for chunk in chunks:
@@ -143,8 +155,16 @@ async def chat_endpoint(file: UploadFile = File(...), session_id: str = Form(...
         )
         response_text = response.text
     except Exception as e:
-        print(f"Gemini Chat Error: {e}")
-        response_text = "It's so good to hear from you. How has your morning been?"
+        print(f"Gemini Chat Error with {GEMINI_MODEL}: {e}")
+        try:
+            # Fallback to gemini-pro
+            response = genai_client.models.generate_content(
+                model="gemini-pro",
+                contents=prompt
+            )
+            response_text = response.text
+        except:
+            response_text = "It's so good to hear from you. How has your morning been?"
 
     return JSONResponse(content={"response_text": response_text})
 
@@ -182,38 +202,17 @@ async def analyze_full_session(session_id: str = Form(...)):
 
         # 3. Extract Features from Wav2Vec2-DementiaBank
         means, stds = extract_acoustic_features(trimmed_path)
-
-        # 4. Expert Interpretation using Gemini
-        # We pass the numerical fingerprints to Gemini to explain the diagnosis
-        diagnosis_prompt = f"""
-        Act as a Neuro-Speech Pathologist. You have analyzed a patient's speech using the 
-        Shields Wav2Vec2 DementiaBank model. 
-
-        Acoustic Feature Fingerprint (Mean): {means}
-        Acoustic Feature Fingerprint (Std): {stds}
-
-        Based on these high-dimensional embeddings and the context of a 'friendly chat', 
-        determine the likelihood of cognitive impairment. 
-        Refer to characteristics of the DementiaBank dataset (e.g., prosody, phonological errors).
-
-        Output strictly in JSON format:
-        {{
-            "label": "Dementia" or "Healthy",
-            "score": 0-100,
-            "confidence": "High" | "Medium" | "Low",
-            "explanation": "Explain how the acoustic features and speech patterns led to this result."
-        }}
-        """
-
-        analysis_res = genai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=diagnosis_prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
         
-        return JSONResponse(content=json.loads(analysis_res.text))
+        if means is None or stds is None:
+            return JSONResponse(status_code=500, content={"error": "Feature extraction failed"})
+        
+        # Return raw features for testing (without Gemini analysis)
+        return JSONResponse(content={
+            "label": "Feature Extraction Success",
+            "means": means,
+            "stds": stds,
+            "message": "Acoustic features extracted successfully"
+        })
 
     except Exception as e:
         print(f"Analysis Crash: {e}")
