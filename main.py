@@ -3,12 +3,14 @@ import time
 import shutil
 import io
 import json
+import tempfile
 import torch
 import librosa
 import numpy as np
 from scipy.io import wavfile
 import requests
 from dotenv import load_dotenv
+import speech_recognition as sr
 
 # --- SET FFMPEG PATH FIRST (before importing pydub) ---
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -111,26 +113,65 @@ def text_to_speech(text: str):
         print(f"ElevenLabs Error: {e}")
         return None
 
-
 def transcribe_audio(audio_path: str) -> str:
     """Transcribe audio file to text using Wav2Vec2 CTC model."""
-    if asr_model is None:
-        return ""
+    # Use the SpeechRecognition library for STT. This prefers Google's free API
+    # but will fall back to PocketSphinx if available for offline use.
+    recognizer = sr.Recognizer()
+    tmp_wav = None
     try:
-        # load waveform
-        speech, sr = librosa.load(audio_path, sr=16000)
-        inputs = processor(speech, sampling_rate=16000, return_tensors="pt", padding=True)
-        input_values = inputs.input_values.to(device)
+        # Convert to a standard 16kHz mono WAV for SpeechRecognition
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_wav = tmp.name
+        tmp.close()
+        audio_seg = AudioSegment.from_file(audio_path)
+        audio_seg = audio_seg.set_frame_rate(16000).set_channels(1)
+        audio_seg.export(tmp_wav, format="wav")
 
-        with torch.no_grad():
-            logits = asr_model(input_values).logits
+        with sr.AudioFile(tmp_wav) as source:
+            audio_data = recognizer.record(source)
 
-        predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = processor.batch_decode(predicted_ids)[0]
-        return transcription.strip()
+        # Try Google's recognizer first (online). If it fails and pocketsphinx
+        # is installed, try the offline recognizer.
+        try:
+            text = recognizer.recognize_google(audio_data)
+            return text.strip()
+        except sr.RequestError as e:
+            print(f"Google STT request error: {e}")
+            # fallthrough to sphinx
+        except sr.UnknownValueError:
+            print("Google STT could not understand audio")
+
+        # Fallback to PocketSphinx if available; if that fails, try local Wav2Vec2 CTC
+        try:
+            text = recognizer.recognize_sphinx(audio_data)
+            return text.strip()
+        except Exception as e:
+            print(f"PocketSphinx fallback failed or not available: {e}")
+            # If a local Wav2Vec2 CTC ASR model is loaded, use it as a final fallback
+            if asr_model is not None:
+                try:
+                    # Load the converted WAV and run the CTC model
+                    speech_wav, sr_lib = librosa.load(tmp_wav, sr=16000)
+                    inputs = processor(speech_wav, sampling_rate=16000, return_tensors="pt", padding=True)
+                    input_values = inputs.input_values.to(device)
+                    with torch.no_grad():
+                        logits = asr_model(input_values).logits
+                    predicted_ids = torch.argmax(logits, dim=-1)
+                    transcription = processor.batch_decode(predicted_ids)[0]
+                    return transcription.strip()
+                except Exception as e2:
+                    print(f"Wav2Vec2 fallback failed: {e2}")
+            return ""
     except Exception as e:
         print(f"Transcription Error: {e}")
         return ""
+    finally:
+        try:
+            if tmp_wav and os.path.exists(tmp_wav):
+                os.remove(tmp_wav)
+        except Exception:
+            pass
 
 def trim_silence_pydub(audio_path: str):
     """Removes silence from audio using pydub."""
