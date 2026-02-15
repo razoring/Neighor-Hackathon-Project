@@ -352,7 +352,7 @@ def start_voice_system():
 
                     # ElevenLabs TTS
                     audio_stream = eleven_client.text_to_speech.convert(
-                        text=reply, voice_id="21m00Tcm4TlvDq8ikWAM", model_id="eleven_turbo_v2_5"
+                        text=reply, voice_id="5u41aNhyCU6hXOcjPPv0", model_id="eleven_flash_v2_5"
                     )
                     audio_bytes = b"".join(chunk for chunk in audio_stream)
                     
