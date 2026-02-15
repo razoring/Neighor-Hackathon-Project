@@ -51,7 +51,7 @@ history = []
 session_id = f"local_{int(time.time())}"
 clips_collected = []  # Store audio clips for final analysis
 idle_timeout = 0  # Track seconds of idle silence
-IDLE_LIMIT = 60.0  # 10 seconds of silence before ending call
+IDLE_LIMIT = 30.0  # 10 seconds of silence before ending call
 all_calls = []  # Store all call sessions
 barge_in_enabled = False  # Flag to prevent barge-in on TTS startup
 bargingAllowed = False
@@ -235,12 +235,8 @@ def save_and_reset_call():
         except Exception as e:
             print(f"Error deleting {clip_path}: {e}")
     
-    # Reset for next call
-    session_id = f"local_{int(time.time())}"
-    history = []
-    clips_collected = []
-    idle_timeout = 0
-    no_response_count = 0
+    # Return diagnosis for immediate display
+    return diagnosis
 
 # --- 1. SOUND OUTPUT (SPEAKERS) ---
 def play_audio(audio_bytes):
@@ -290,7 +286,7 @@ def get_ai_response(text):
 
 # --- 3. MICROPHONE STREAMING LOOP ---
 def start_voice_system():
-    global no_response_count, is_playing_audio, history, clips_collected, idle_timeout
+    global no_response_count, is_playing_audio, history, clips_collected, idle_timeout, session_id
     
     p = pyaudio.PyAudio()
     stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, 
@@ -401,8 +397,8 @@ def start_voice_system():
                 print(f"No-Response Count: {no_response_count}")
                 
                 # Show dementia analysis if available
-                if len(all_calls) > 0 and all_calls[-1].get("diagnosis"):
-                    diagnosis = all_calls[-1]["diagnosis"]
+                diagnosis = save_and_reset_call()
+                if diagnosis:
                     print("\n>>> DEMENTIA ANALYSIS ===")
                     if "label" in diagnosis:
                         print(f"Assessment: {diagnosis.get('label', 'Unknown')}")
@@ -414,8 +410,13 @@ def start_voice_system():
                 
                 print("=== END CALL ANALYSIS ===\n")
                 
-                # Save call data and reset for next call
-                save_and_reset_call()
+                # Reset for next call
+                session_id = f"local_{int(time.time())}"
+                history = []
+                clips_collected = []
+                idle_timeout = 0
+                no_response_count = 0
+                
                 print(">>> System Idle. Waiting for next call...")
                 time.sleep(1)  # Brief pause before listening again
 
