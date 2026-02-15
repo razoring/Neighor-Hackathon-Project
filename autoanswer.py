@@ -262,10 +262,18 @@ Respond ONLY with valid JSON, no other text."""
         # Try to parse JSON
         diagnosis_result = {}
         try:
-            parsed = json.loads(diagnosis_response)
+            # Clean up markdown code blocks if present
+            clean_response = diagnosis_response.strip()
+            if clean_response.startswith("```"):
+                clean_response = clean_response.strip("`")
+                if clean_response.lower().startswith("json"):
+                    clean_response = clean_response[4:].strip()
+            
+            parsed = json.loads(clean_response)
             if isinstance(parsed, dict):
                 diagnosis_result = parsed
         except:
+            print(f"JSON Parsing failed. Raw response: {diagnosis_response}")
             diagnosis_result = {"explanation": diagnosis_response}
 
         # Build a consolidated health report that includes both diagnosis_result and breathing_report
@@ -324,7 +332,7 @@ def save_and_reset_call():
     # Return health report for immediate display
     return health_report
 
-@app.route('/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 def get_health():
     global latest_health_report
     print(f"[API] Serving health report: {latest_health_report.keys() if latest_health_report else 'EMPTY'}")
