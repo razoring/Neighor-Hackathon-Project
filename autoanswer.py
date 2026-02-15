@@ -38,8 +38,8 @@ SILENCE_LIMIT = 2.0    # Seconds of silence to split clips or trigger response
 
 # --- API/MODEL CONFIG ---
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
-#OLLAMA_MODEL = "pheem49/Luna:4b"
-OLLAMA_MODEL = "gemma3:1b"
+OLLAMA_MODEL = "pheem49/Luna:4b"
+#OLLAMA_MODEL = "gemma3:1b"
 eleven_client = ElevenLabs(api_key=os.getenv("TTS"))
 DEMENTIA_MODEL_ID = "shields/wav2vec2-xl-960h-dementiabank"
 
