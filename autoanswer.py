@@ -476,11 +476,11 @@ def start_voice_system():
             idle_timeout += CHUNK / RATE  # Accumulate silence duration
             if idle_timeout >= IDLE_LIMIT:
                 # Announce call ending
-                print("\n[10 seconds of silence detected]")
+                print("\n[Max silence detected]")
                 print(">>> Announcing call ending...")
                 try:
                     audio_stream = eleven_client.text_to_speech.convert(
-                        text="Thank you for the call. Goodbye.", 
+                        text="The call has ended. Goodbye.", 
                         voice_id="21m00Tcm4TlvDq8ikWAM", 
                         model_id="eleven_turbo_v2_5"
                     )
