@@ -1,5 +1,5 @@
+# For CTRL+HACK+DEL 36hr Hackathon: https://devpost.com/software/neighbor-chat-bot
 # Neighbor: AI Companion with a Clinical Heart
-For CTRL+HACK+DEL: https://devpost.com/software/neighbor-chat-bot
 Neighbor is a proactive health-monitoring companion designed to support the elderly aging in place. It uses deep learning and signal processing to conversationally engage users while passively monitoring for cognitive decline and respiratory issues.
 
 ## 🚀 Overview
